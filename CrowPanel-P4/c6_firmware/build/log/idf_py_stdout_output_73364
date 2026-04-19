@@ -1,0 +1,8 @@
+Command: ninja all
+[1/4] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\ESP32-Code\CrowPanel-P4\c6_firmware\build\esp-idf\esptool_py && C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe "D:/Bluetooth Project - Copy/esp-idf/components/partition_table/check_sizes.py" --offset 0x8000 partition --type app D:/ESP32-Code/CrowPanel-P4/c6_firmware/build/partition_table/partition-table.bin D:/ESP32-Code/CrowPanel-P4/c6_firmware/build/crowpanel_c6_firmware.bin"
+crowpanel_c6_firmware.bin binary size 0x12c790 bytes. Smallest app partition is 0x1e0000 bytes. 0xb3870 bytes (37%) free.
+[2/4] Performing build step for 'bootloader'
+[1/1] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\ESP32-Code\CrowPanel-P4\c6_firmware\build\bootloader\esp-idf\esptool_py && C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe "D:/Bluetooth Project - Copy/esp-idf/components/partition_table/check_sizes.py" --offset 0x8000 bootloader 0x0 D:/ESP32-Code/CrowPanel-P4/c6_firmware/build/bootloader/bootloader.bin"
+Bootloader binary size 0x5f30 bytes. 0x20d0 bytes (26%) free.
+[3/4] No install step for 'bootloader'
+[4/4] Completed 'bootloader'

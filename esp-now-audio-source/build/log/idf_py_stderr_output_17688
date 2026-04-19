@@ -1,0 +1,10 @@
+Command: ninja flash
+CMake Error at run_serial_tool.cmake:67 (message):
+  
+  C:/Users/ngocv/.espressif/python_env/idf5.5_py3.14_env/Scripts/python.exe;;D:/Bluetooth
+  Project -
+  Copy/esp-idf/components/esptool_py/esptool/esptool.py;--chip;esp32 failed.
+
+
+
+

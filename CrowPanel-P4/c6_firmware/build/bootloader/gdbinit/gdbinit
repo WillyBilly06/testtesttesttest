@@ -1,0 +1,2 @@
+source D:/ESP32-Code/CrowPanel-P4/c6_firmware/build/bootloader/gdbinit/symbols
+source D:/ESP32-Code/CrowPanel-P4/c6_firmware/build/bootloader/gdbinit/connect

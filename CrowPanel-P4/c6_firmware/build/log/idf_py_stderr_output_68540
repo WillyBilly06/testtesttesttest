@@ -1,0 +1,7 @@
+Command: cmake -G Ninja -DPYTHON_DEPS_CHECKED=1 -DPYTHON=C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe -DESP_PLATFORM=1 -DCCACHE_ENABLE=1 D:\ESP32-Code\CrowPanel-P4\c6_firmware
+fatal: not a git repository (or any of the parent directories): .git
+warning: the int symbol ESP_HOSTED_BT_UART_PORT_ESP32 (defined at D:/ESP32-Code/CrowPanel-P4/c6_firmware/main\../../factory_project/managed_components/espressif__esp_hosted/slave/main/Kconfig.projbuild:896) has a non-int range [BTDM_CTRL_HCI_UART_NO (undefined), BTDM_CTRL_HCI_UART_NO (undefined)]
+warning: the int symbol ESP_HOSTED_BT_UART_BAUDRATE_ESP32 (defined at D:/ESP32-Code/CrowPanel-P4/c6_firmware/main\../../factory_project/managed_components/espressif__esp_hosted/slave/main/Kconfig.projbuild:902) has a non-int range [BTDM_CTRL_HCI_UART_BAUDRATE (undefined), BTDM_CTRL_HCI_UART_BAUDRATE (undefined)]
+info: INFO: Symbol ESP_WIFI_DPP_SUPPORT defined in multiple locations (see below). Please check if this is a correct behavior or a random name match:
+    D:\ESP32-Code\CrowPanel-P4\factory_project\managed_components\espressif__esp_hosted\slave\main\Kconfig.projbuild:997
+    D:\Bluetooth Project - Copy\esp-idf\components\esp_wifi\Kconfig:717

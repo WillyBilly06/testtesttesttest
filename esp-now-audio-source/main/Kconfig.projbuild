@@ -1,0 +1,89 @@
+menu "OpenALS Source"
+
+    config SOFTAP_SSID
+        string "SoftAP SSID"
+        default "ALS_TX"
+        help
+            SSID of the access point that phones/laptops connect to
+            for receiving the UDP audio stream.
+
+    config SOFTAP_PASSWORD
+        string "SoftAP Password"
+        default "openals123"
+        help
+            WPA2 password for the access point.  Leave empty for an
+            open (no password) network.  Must be at least 8 characters
+            when set.
+
+    config SOURCE_AP_IP_C
+        int "SoftAP subnet third octet"
+        range 1 254
+        default 50
+        help
+            SoftAP uses 192.168.<this>.1/24. Change this if it conflicts
+            with your upstream router LAN.
+
+    config AUDIO_QUEUE_LEN
+        int "Audio queue length (frames)"
+        range 4 64
+        default 32
+        help
+            Number of encoded frames buffered before send task.
+            Deeper queue absorbs TX-pipeline stalls (e.g. during MAC
+            retry bursts) without dropping captured audio. 32 frames
+            = 240 ms of latency headroom, plenty for transient stalls
+            yet still bounded by capture-side newest-wins drain.
+
+    config AUDIO_TX_TOKENS
+        int "ESP-NOW TX token count"
+        range 4 64
+        default 64
+        help
+            Max in-flight ESP-NOW sends before backpressure.
+            Each token is held from esp_now_send() until the TX
+            callback fires. Under 6 Mbps or interference bursts,
+            802.11 MAC retries can hold a token 10-20 ms; at 133
+            pps this needs ~2-3 tokens average but spikes to 8-16
+            during congestion. 64 gives generous headroom to
+            eliminate token-exhaustion drops entirely.
+
+    config AUDIO_TASK_PRIO_CAP_ENC
+        int "Capture+encode task priority"
+        range 1 23
+        default 7
+
+    config AUDIO_TASK_PRIO_SEND
+        int "Send task priority"
+        range 1 23
+        default 8
+
+    choice ESPNOW_RATE
+        prompt "ESP-NOW PHY rate"
+        default ESPNOW_RATE_24M
+        help
+            Trade-off between range and pipeline fluidity:
+              - 24 Mbps: shortest airtime per frame (~50 us), fastest
+                token turnover, minimal tx-queue stalls. Best for short
+                to medium range (typical ~15-20 m indoors through 1 wall).
+              - 12 Mbps: middle ground.
+              - 6 Mbps: ~12 dB more link margin (reaches ~30+ m through
+                multiple walls) but each frame takes ~4x more airtime,
+                which can exhaust the TX token pool and cause source-side
+                audio_q drops at high packet rates.
+
+            For this 133-packet/sec unicast audio workload, 24 Mbps is
+            the default because token exhaustion at 6 Mbps causes
+            more audible drops than the theoretical range gain is worth.
+
+        config ESPNOW_RATE_6M
+            bool "6 Mbps (long range, risks token exhaustion)"
+
+        config ESPNOW_RATE_12M
+            bool "12 Mbps"
+
+        config ESPNOW_RATE_24M
+            bool "24 Mbps (default, best for smooth audio)"
+
+    endchoice
+
+endmenu

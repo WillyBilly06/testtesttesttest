@@ -1,0 +1,4 @@
+[mapping:minimp3]
+archive: libminimp3.a
+entries:
+    minimp3_impl (noflash_data)

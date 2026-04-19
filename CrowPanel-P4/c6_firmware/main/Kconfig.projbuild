@@ -1,0 +1,2 @@
+# Include the ESP-Hosted slave Kconfig
+rsource "../../factory_project/managed_components/espressif__esp_hosted/slave/main/Kconfig.projbuild"

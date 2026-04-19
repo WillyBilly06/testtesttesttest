@@ -1,0 +1,78 @@
+Command: ninja flash
+[1/5] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\ESP32-Code\esp-now-audio-source\build\esp-idf\esptool_py && C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe "D:/Bluetooth Project - Copy/esp-idf/components/partition_table/check_sizes.py" --offset 0x8000 partition --type app D:/ESP32-Code/esp-now-audio-source/build/partition_table/partition-table.bin D:/ESP32-Code/esp-now-audio-source/build/espnow_audio_source.bin"
+espnow_audio_source.bin binary size 0xdf810 bytes. Smallest app partition is 0x3f0000 bytes. 0x3107f0 bytes (78%) free.
+[2/5] Performing build step for 'bootloader'
+[1/1] C:\WINDOWS\system32\cmd.exe /C "cd /D D:\ESP32-Code\esp-now-audio-source\build\bootloader\esp-idf\esptool_py && C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe "D:/Bluetooth Project - Copy/esp-idf/components/partition_table/check_sizes.py" --offset 0x8000 bootloader 0x1000 D:/ESP32-Code/esp-now-audio-source/build/bootloader/bootloader.bin"
+Bootloader binary size 0x66c0 bytes. 0x940 bytes (8%) free.
+[3/5] No install step for 'bootloader'
+[4/5] Completed 'bootloader'
+[4/5] C:\WINDOWS\system32\cmd.exe /C "cd /D "D:\Bluetooth Project - Copy\esp-idf\components\esptool_py" && C:\Users\ngocv\.espressif\tools\cmake\3.30.2\bin\cmake.exe -D "IDF_PATH=D:/Bluetooth Project - Copy/esp-idf" -D "SERIAL_TOOL=C:/Users/ngocv/.espressif/python_env/idf5.5_py3.14_env/Scripts/python.exe;;D:/Bluetooth Project - Copy/esp-idf/components/esptool_py/esptool/esptool.py;--chip;esp32" -D SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;write_flash;@flash_args -D WORKING_DIRECTORY=D:/ESP32-Code/esp-now-audio-source/build -P "D:/Bluetooth Project - Copy/esp-idf/components/esptool_py/run_serial_tool.cmake""
+esptool.py --chip esp32 -p COM4 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size 8MB 0x1000 bootloader/bootloader.bin 0x10000 espnow_audio_source.bin 0x8000 partition_table/partition-table.bin
+esptool.py v4.12.dev1
+Serial port COM4
+Connecting....
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: 88:13:bf:a9:b4:e0
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 460800
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00001000 to 0x00007fff...
+Flash will be erased from 0x00010000 to 0x000effff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+SHA digest in image updated
+Compressed 26304 bytes to 16566...
+Writing at 0x00001000... (50 %)
+Writing at 0x000075d1... (100 %)
+Wrote 26304 bytes (16566 compressed) at 0x00001000 in 0.6 seconds (effective 367.8 kbit/s)...
+Hash of data verified.
+Compressed 915472 bytes to 583863...
+Writing at 0x00010000... (2 %)
+Writing at 0x0001c765... (5 %)
+Writing at 0x00024405... (8 %)
+Writing at 0x0002a0cd... (11 %)
+Writing at 0x00030bce... (13 %)
+Writing at 0x00039e5c... (16 %)
+Writing at 0x000424f0... (19 %)
+Writing at 0x00047bf8... (22 %)
+Writing at 0x0004d765... (25 %)
+Writing at 0x00052e60... (27 %)
+Writing at 0x00058bf1... (30 %)
+Writing at 0x0005e52f... (33 %)
+Writing at 0x000641cf... (36 %)
+Writing at 0x0006a1a1... (38 %)
+Writing at 0x0006ff7d... (41 %)
+Writing at 0x00075f4e... (44 %)
+Writing at 0x0007bb69... (47 %)
+Writing at 0x00082107... (50 %)
+Writing at 0x000877aa... (52 %)
+Writing at 0x0008cd22... (55 %)
+Writing at 0x000925fd... (58 %)
+Writing at 0x0009821f... (61 %)
+Writing at 0x0009dacc... (63 %)
+Writing at 0x000a3666... (66 %)
+Writing at 0x000a94ad... (69 %)
+Writing at 0x000aed5a... (72 %)
+Writing at 0x000b4b24... (75 %)
+Writing at 0x000baa6f... (77 %)
+Writing at 0x000c08eb... (80 %)
+Writing at 0x000c612a... (83 %)
+Writing at 0x000cec41... (86 %)
+Writing at 0x000d49db... (88 %)
+Writing at 0x000da9f6... (91 %)
+Writing at 0x000e04d0... (94 %)
+Writing at 0x000e6818... (97 %)
+Writing at 0x000ebaf8... (100 %)
+Wrote 915472 bytes (583863 compressed) at 0x00010000 in 13.2 seconds (effective 555.9 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 118...
+Writing at 0x00008000... (100 %)
+Wrote 3072 bytes (118 compressed) at 0x00008000 in 0.0 seconds (effective 779.0 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...

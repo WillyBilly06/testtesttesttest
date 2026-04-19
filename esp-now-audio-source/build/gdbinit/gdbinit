@@ -1,0 +1,2 @@
+source D:/ESP32-Code/esp-now-audio-source/build/gdbinit/symbols
+source D:/ESP32-Code/esp-now-audio-source/build/gdbinit/connect

@@ -1,0 +1,8 @@
+Music/
+chat.json
+*.mp4
+*.exe
+build/
+managed_components/
+.venv/
+__pycache__/

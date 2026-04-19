@@ -1,0 +1,86 @@
+Command: ninja flash
+[1/11] Performing build step for 'bootloader'
+[1/1] C:\Windows\system32\cmd.exe /C "cd /D D:\esp-now-audio-sink\build\bootloader\esp-idf\esptool_py && C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe "D:/Bluetooth Project/esp-idf/components/partition_table/check_sizes.py" --offset 0x8000 bootloader 0x1000 D:/esp-now-audio-sink/build/bootloader/bootloader.bin"
+Bootloader binary size 0x66c0 bytes. 0x940 bytes (8%) free.
+[2/11] No install step for 'bootloader'
+[3/11] Completed 'bootloader'
+[4/11] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/net/sink_net.c.obj
+[5/11] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/audio/sink_audio.c.obj
+[6/11] Linking C static library esp-idf\main\libmain.a
+[7/11] Generating esp-idf/esp_system/ld/sections.ld
+[8/11] Linking CXX executable espnow_audio_sink.elf
+[9/11] Generating binary image from built executable
+esptool.py v4.12.dev1
+Creating esp32 image...
+Merged 2 ELF sections
+Successfully created esp32 image.
+Generated D:/esp-now-audio-sink/build/espnow_audio_sink.bin
+[10/11] C:\Windows\system32\cmd.exe /C "cd /D D:\esp-now-audio-sink\build\esp-idf\esptool_py && C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe "D:/Bluetooth Project/esp-idf/components/partition_table/check_sizes.py" --offset 0x8000 partition --type app D:/esp-now-audio-sink/build/partition_table/partition-table.bin D:/esp-now-audio-sink/build/espnow_audio_sink.bin"
+espnow_audio_sink.bin binary size 0xca290 bytes. Smallest app partition is 0x100000 bytes. 0x35d70 bytes (21%) free.
+[10/11] C:\Windows\system32\cmd.exe /C "cd /D "D:\Bluetooth Project\esp-idf\components\esptool_py" && C:\Users\ngocv\.espressif\tools\cmake\3.30.2\bin\cmake.exe -D "IDF_PATH=D:/Bluetooth Project/esp-idf" -D "SERIAL_TOOL=C:/Users/ngocv/.espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe;;D:/Bluetooth Project/esp-idf/components/esptool_py/esptool/esptool.py;--chip;esp32" -D SERIAL_TOOL_ARGS=--before=default_reset;--after=hard_reset;write_flash;@flash_args -D WORKING_DIRECTORY=D:/esp-now-audio-sink/build -P "D:/Bluetooth Project/esp-idf/components/esptool_py/run_serial_tool.cmake""
+esptool.py --chip esp32 -p COM9 -b 460800 --before=default_reset --after=hard_reset write_flash --flash_mode dio --flash_freq 40m --flash_size 2MB 0x1000 bootloader/bootloader.bin 0x10000 espnow_audio_sink.bin 0x8000 partition_table/partition-table.bin
+esptool.py v4.12.dev1
+Serial port COM9
+Connecting...................................
+Chip is ESP32-D0WD-V3 (revision v3.1)
+Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None
+Crystal is 40MHz
+MAC: 08:b6:1f:b8:66:24
+Uploading stub...
+Running stub...
+Stub running...
+Changing baud rate to 460800
+Changed.
+Configuring flash size...
+Flash will be erased from 0x00001000 to 0x00007fff...
+Flash will be erased from 0x00010000 to 0x000dafff...
+Flash will be erased from 0x00008000 to 0x00008fff...
+SHA digest in image updated
+Compressed 26304 bytes to 16561...
+Writing at 0x00001000... (50 %)
+Writing at 0x000075d6... (100 %)
+Wrote 26304 bytes (16561 compressed) at 0x00001000 in 0.8 seconds (effective 257.6 kbit/s)...
+Hash of data verified.
+Compressed 828048 bytes to 527408...
+Writing at 0x00010000... (3 %)
+Writing at 0x0001c61d... (6 %)
+Writing at 0x0002466a... (9 %)
+Writing at 0x00029139... (12 %)
+Writing at 0x00030a55... (15 %)
+Writing at 0x0003b7f6... (18 %)
+Writing at 0x000412db... (21 %)
+Writing at 0x00046d6f... (24 %)
+Writing at 0x0004cbfa... (27 %)
+Writing at 0x000527eb... (30 %)
+Writing at 0x00058699... (33 %)
+Writing at 0x0005e483... (36 %)
+Writing at 0x00064a74... (39 %)
+Writing at 0x0006a067... (42 %)
+Writing at 0x0006f548... (45 %)
+Writing at 0x0007499b... (48 %)
+Writing at 0x0007a843... (51 %)
+Writing at 0x0008018b... (54 %)
+Writing at 0x00085bcf... (57 %)
+Writing at 0x0008baca... (60 %)
+Writing at 0x00091549... (63 %)
+Writing at 0x00096f7e... (66 %)
+Writing at 0x0009cc9b... (69 %)
+Writing at 0x000a2758... (72 %)
+Writing at 0x000a83f1... (75 %)
+Writing at 0x000adf73... (78 %)
+Writing at 0x000b3809... (81 %)
+Writing at 0x000bbe4b... (84 %)
+Writing at 0x000c1ed1... (87 %)
+Writing at 0x000c7c89... (90 %)
+Writing at 0x000cdc26... (93 %)
+Writing at 0x000d373d... (96 %)
+Writing at 0x000d8c71... (100 %)
+Wrote 828048 bytes (527408 compressed) at 0x00010000 in 13.2 seconds (effective 500.1 kbit/s)...
+Hash of data verified.
+Compressed 3072 bytes to 103...
+Writing at 0x00008000... (100 %)
+Wrote 3072 bytes (103 compressed) at 0x00008000 in 0.1 seconds (effective 253.4 kbit/s)...
+Hash of data verified.
+
+Leaving...
+Hard resetting via RTS pin...

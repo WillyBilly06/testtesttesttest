@@ -1,0 +1,113 @@
+Command: C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe D:\Bluetooth Project\esp-idf\tools/idf_monitor.py -p COM9 -b 115200 --toolchain-prefix xtensa-esp32-elf- --target esp32 --revision 0 D:\esp-now-audio-sink\build\espnow_audio_sink.elf D:\esp-now-audio-sink\build\bootloader\bootloader.elf --force-color -m 'C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe' 'D:\Bluetooth Project\esp-idf\tools\idf.py' '-p' 'COM9'
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:63�ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:6384
+load:0x40078000,len:15916
+load:0x40080400,len:3920
+entry 0x40080644
+[0;32mI (27) boot: ESP-IDF 8f98866d-dirty 2nd stage bootloader[0m
+[0;32mI (27) boot: compile time Feb 17 2026 12:30:17[0m
+[0;32mI (27) boot: Multicore bootloader[0m
+[0;32mI (29) boot: chip revision: v3.1[0m
+[0;32mI (32) boot.esp32: SPI Speed      : 40MHz[0m
+[0;32mI (36) boot.esp32: SPI Mode       : DIO[0m
+[0;32mI (40) boot.esp32: SPI Flash Size : 2MB[0m
+[0;32mI (43) boot: Enabling RNG early entropy source...[0m
+[0;32mI (48) boot: Partition Table:[0m
+[0;32mI (50) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (57) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (63) boot:  1 phy_init         RF data          01 01 0000f000 00001000[0m
+[0;32mI (70) boot:  2 factory          factory app      00 00 00010000 00100000[0m
+[0;32mI (76) boot: End of partition table[0m
+[0;32mI (79) esp_image: segment 0: paddr=00010020 vaddr=3f400020 size=256fch (153340) map[0m
+[0;32mI (139) esp_image: segment 1: paddr=00035724 vaddr=3ffb0000 size=04234h ( 16948) load[0m
+[0;32mI (146) esp_image: segment 2: paddr=00039960 vaddr=40080000 size=066b8h ( 26296) load[0m
+[0;32mI (156) esp_image: segment 3: paddr=00040020 vaddr=400d0020 size=85788h (546696) map[0m
+[0;32mI (343) esp_image: segment 4: paddr=000c57b0 vaddr=400866b8 size=12d94h ( 77204) load[0m
+[0;32mI (374) esp_image: segment 5: paddr=000d854c vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (386) boot: Loaded app from partition at offset 0x10000[0m
+[0;32mI (386) boot: Disabling RNG early entropy source...[0m
+[0;32mI (397) cpu_start: Multicore app[0m
+[0;32mI (405) cpu_start: GPIO 3 and 1 are used as console UART I/O pins[0m
+[0;32mI (405) cpu_start: Pro cpu start user code[0m
+[0;32mI (405) cpu_start: cpu freq: 240000000 Hz[0m
+[0;32mI (407) app_init: Application information:[0m
+[0;32mI (411) app_init: Project name:     espnow_audio_sink[0m
+[0;32mI (416) app_init: App version:      3667caf-dirty[0m
+[0;32mI (420) app_init: Compile time:     Feb 17 2026 12:30:10[0m
+[0;32mI (425) app_init: ELF file SHA256:  b8e0b35ae...[0m
+[0;32mI (430) app_init: ESP-IDF:          8f98866d-dirty[0m
+[0;32mI (434) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (438) efuse_init: Max chip rev:     v3.99 [0m
+[0;32mI (442) efuse_init: Chip rev:         v3.1[0m
+[0;32mI (446) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (452) heap_init: At 3FFAE6E0 len 00001920 (6 KiB): DRAM[0m
+[0;32mI (457) heap_init: At 3FFBDA50 len 000225B0 (137 KiB): DRAM[0m
+[0;32mI (462) heap_init: At 3FFE0440 len 00003AE0 (14 KiB): D/IRAM[0m
+[0;32mI (468) heap_init: At 3FFE4350 len 0001BCB0 (111 KiB): D/IRAM[0m
+[0;32mI (473) heap_init: At 4009944C len 00006BB4 (26 KiB): IRAM[0m
+[0;33mW (480) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig[0m
+[0;32mI (492) spi_flash: detected chip: generic[0m
+[0;32mI (495) spi_flash: flash io: dio[0m
+[0;33mW (498) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.[0m
+[0;32mI (511) main_task: Started on CPU0[0m
+[0;32mI (514) main_task: Calling app_main()[0m
+[0;32mI (516) LC3_SINK: ESP-NOW LC3 sink online[0m
+[0;32mI (520) LC3_SINK: Max payload: 160, Ring: 12, Prebuffer: 1, Target fill: 1[0m
+[0;32mI (541) wifi:wifi driver task: 3ffc5774, prio:23, stack:6656, core=0[0m
+[0;32mI (547) wifi:wifi firmware version: ee91c8c[0m
+[0;32mI (547) wifi:wifi certification version: v7.0[0m
+[0;32mI (547) wifi:config NVS flash: enabled[0m
+[0;32mI (548) wifi:config nano formatting: disabled[0m
+[0;32mI (552) wifi:Init data frame dynamic rx buffer num: 64[0m
+[0;32mI (557) wifi:Init static rx mgmt buffer num: 5[0m
+[0;32mI (561) wifi:Init management short buffer num: 32[0m
+[0;32mI (565) wifi:Init dynamic tx buffer num: 64[0m
+[0;32mI (569) wifi:Init static rx buffer size: 1600[0m
+[0;32mI (573) wifi:Init static rx buffer num: 16[0m
+[0;32mI (577) wifi:Init dynamic rx buffer num: 64[0m
+[0;32mI (582) wifi_init: rx ba win: 32[0m
+[0;32mI (584) wifi_init: accept mbox: 6[0m
+[0;32mI (587) wifi_init: tcpip mbox: 32[0m
+[0;32mI (590) wifi_init: udp mbox: 6[0m
+[0;32mI (593) wifi_init: tcp mbox: 6[0m
+[0;32mI (596) wifi_init: tcp tx win: 5760[0m
+[0;32mI (599) wifi_init: tcp rx win: 5760[0m
+[0;32mI (602) wifi_init: tcp mss: 1440[0m
+[0;32mI (605) wifi_init: WiFi IRAM OP enabled[0m
+[0;32mI (608) wifi_init: WiFi RX IRAM OP enabled[0m
+[0;32mI (613) phy_init: phy_version 4863,a3a4459,Oct 28 2025,14:30:06[0m
+[0;32mI (685) phy_init: Saving new calibration data due to checksum failure or outdated calibration data, mode(0)[0m
+[0;32mI (700) wifi:mode : sta (08:b6:1f:b8:66:24)[0m
+[0;32mI (701) wifi:enable tsf[0m
+[0;32mI (704) wifi:Set ps type: 0, coexist: 0[0m
+
+[0;32mI (706) ESPNOW: espnow [version: 2.0] init[0m
+[0;32mI (707) LC3_SINK: ESP-NOW initialized, ready for room discovery[0m
+[0;32mI (709) LC3_SINK: [0m
+[0;32mI (711) LC3_SINK: ========================================[0m
+[0;32mI (711) LC3_SINK: I2S TX up at 48000 Hz[0m
+[0;32mI (717) LC3_SINK: Found Room 0x7F ch=1 MAC=C8:2E:18:EF:E2:D8 RSSI=-32[0m
+[0;32mI (720) LC3_SINK: LC3 decoder ready: 10000us, 48000 Hz, 80 bytes/ch[0m
+[0;32mI (716) LC3_SINK:   Scanning for available rooms...[0m
+[0;32mI (732) LC3_SINK: Playback ready, waiting for packets...[0m
+[0;32mI (736) LC3_SINK: ========================================[0m
+[0;32mI (741) LC3_SINK: Timing: frame~10000us (480 samples), dma~20000us, prebuf=1[0m
+[0;32mI (716) main_task: Returned from app_main()[0m
+[0;32mI (4647) LC3_SINK: [0m
+[0;32mI (4647) LC3_SINK: Available rooms:[0m
+[0;32mI (4647) LC3_SINK: ----------------------------------------[0m
+[0;32mI (4647) LC3_SINK:   [1] Room 0x7F  ch=1  RSSI=-30  C8:2E:18:EF:E2:D8[0m
+[0;32mI (4652) LC3_SINK: ----------------------------------------[0m
+[0;32mI (4657) LC3_SINK: Enter room number (or 'r' to rescan):[0m
+[0;32mI (5709) LC3_SINK: rx=0(0/s) play=0(0/s) q=0 drop=0 und=0 lat=20ms lag=0us off=0us jit=0us sdrop=0 shold=0 tf=1 wait=1ms[0m
