@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "espnow_audio_source",
-    "project_version":    "1",
+    "project_version":    "54c7ba0-dirty",
     "project_path":       "D:/ESP32-Code/esp-now-audio-source",
     "idf_path":           "D:/Bluetooth Project - Copy/esp-idf",
     "build_dir":          "D:/ESP32-Code/esp-now-audio-source/build",
@@ -1235,12 +1235,12 @@
             "dir": "D:/ESP32-Code/esp-now-audio-source/main",
             "type": "LIBRARY",
             "lib": "__idf_main",
-            "reqs": [ "esp_wifi", "esp_timer", "nvs_flash", "esp_http_server", "liblc3", "minimp3", "esp_partition", "spi_flash" ],
+            "reqs": [ "esp_wifi", "esp_timer", "nvs_flash", "esp_http_server", "liblc3", "minimp3", "esp_partition", "spi_flash", "mbedtls" ],
             "priv_reqs": [],
             "managed_reqs": [],
             "managed_priv_reqs": [],
             "file": "D:/ESP32-Code/esp-now-audio-source/build/esp-idf/main/libmain.a",
-            "sources": [ "D:/ESP32-Code/esp-now-audio-source/main/main_adpcm.c", "D:/ESP32-Code/esp-now-audio-source/main/source_app.c", "D:/ESP32-Code/esp-now-audio-source/main/core/source_core.c", "D:/ESP32-Code/esp-now-audio-source/main/audio/source_audio.c", "D:/ESP32-Code/esp-now-audio-source/main/wifi/source_wifi.c" ],
+            "sources": [ "D:/ESP32-Code/esp-now-audio-source/main/main_adpcm.c", "D:/ESP32-Code/esp-now-audio-source/main/source_app.c", "D:/ESP32-Code/esp-now-audio-source/main/core/source_core.c", "D:/ESP32-Code/esp-now-audio-source/main/audio/source_audio.c", "D:/ESP32-Code/esp-now-audio-source/main/wifi/source_wifi.c", "D:/ESP32-Code/esp-now-audio-source/main/ecast_source.c", "D:/ESP32-Code/esp-now-audio-source/main/ecast_crypto.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {
@@ -2937,7 +2937,7 @@
             "prefix": "idf",
             "dir": "D:/ESP32-Code/esp-now-audio-source/main",
             "lib": "__idf_main",
-            "reqs": [ "esp_wifi", "esp_timer", "nvs_flash", "esp_http_server", "liblc3", "minimp3", "esp_partition", "spi_flash" ],
+            "reqs": [ "esp_wifi", "esp_timer", "nvs_flash", "esp_http_server", "liblc3", "minimp3", "esp_partition", "spi_flash", "mbedtls" ],
             "priv_reqs": [],
             "managed_reqs": [],
             "managed_priv_reqs": [],

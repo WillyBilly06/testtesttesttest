@@ -1,0 +1,59 @@
+fatal: not a git repository (or any of the parent directories): .git
+Traceback (most recent call last):
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf.py", line 934, in <module>
+    main()
+    ~~~~^^
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf.py", line 813, in main
+    cli(argv, prog_name=PROG, complete_var=SHELL_COMPLETE_VAR)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages\click\core.py", line 1161, in __call__
+    return self.main(*args, **kwargs)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages\click\core.py", line 1082, in main
+    rv = self.invoke(ctx)
+  File "C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages\click\core.py", line 1729, in invoke
+    return _process_result(rv)
+  File "C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages\click\core.py", line 1666, in _process_result
+    value = ctx.invoke(self._result_callback, value, **ctx.params)
+  File "C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages\click\core.py", line 788, in invoke
+    return __callback(*args, **kwargs)
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf.py", line 709, in execute_tasks
+    task(ctx, global_args, task.action_args)
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf.py", line 239, in __call__
+    self.callback(self.name, context, global_args, **action_args)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf_py_actions\core_ext.py", line 51, in build_target
+    run_target(target_name, args, force_progression=GENERATORS[args.generator].get('force_progression', False))
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf_py_actions\tools.py", line 548, in run_target
+    RunTool(
+    ~~~~~~~~
+    ...<8 lines>...
+        buffer_size=buffer_size,
+        ~~~~~~~~~~~~~~~~~~~~~~~~
+    )()
+    ~^^
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf_py_actions\tools.py", line 340, in __call__
+    process, stderr_output_file, stdout_output_file = asyncio.run(self.run_command(self.args, env_copy))
+                                                      ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf_py_actions\tools.py", line 399, in run_command
+    await asyncio.gather(
+    ...<2 lines>...
+    )
+  File "D:\Bluetooth Project - Copy\esp-idf\tools\idf_py_actions\tools.py", line 501, in read_and_write_stream
+    output_converter.write(output)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u0393' in position 36: character maps to <undefined>

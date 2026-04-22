@@ -41,6 +41,15 @@ extern "C" {
 #define ESPNOW_MSG_EVT_ERROR         0x207  /* Error notification (espnow_evt_error_t) */
 #define ESPNOW_MSG_EVT_FW_VER        0x208  /* Firmware version response (espnow_evt_fw_ver_t) */
 
+/* ─── EspCastBR (Auracast-style) message IDs ──────────────────────── */
+/* These carry RAW on-air ECast frames from C6 to P4 *after* authentication
+ * (beacons) / deduplication (audio). P4 owns decryption + playout. */
+#define ESPNOW_MSG_EVT_ECAST_BEACON   0x210  /* 84 B: ecast_hdr + beacon_payload + tag */
+#define ESPNOW_MSG_EVT_ECAST_AUDIO    0x211  /* 165 B: ecast_hdr + ciphertext + MIC   */
+/* Kept for future multi-channel scanning; MVP uses fixed channel 6. */
+#define ESPNOW_MSG_CMD_ECAST_SET_CH   0x110  /* P4 → C6: set wifi channel, 1 B */
+#define ESPNOW_MSG_EVT_ECAST_RSSI     0x212  /* C6 RSSI/rx stats (espnow_evt_stats_t) */
+
 /*──────────────────────────────────────────────────────────────
  * ESP-NOW air protocol constants (must match source firmware)
  *────────────────────────────────────────────────────────────*/

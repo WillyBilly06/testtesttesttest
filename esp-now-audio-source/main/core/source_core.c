@@ -1,5 +1,7 @@
 // MY_NOTE: I split this file out so it's easier for me to tune and debug quickly.
 #include "source_app_internal.h"
+#include "../ecast_source.h"
+#include "../ecast_protocol.h"
 
 const char *TAG = "SRC";
 
@@ -284,13 +286,33 @@ void source_core_main(void) {
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
 
-    audio_q = xQueueCreate(AUDIO_QUEUE_LEN, sizeof(audio_msg_t));
+    /* Legacy queues still created for UDP path + any stale references.
+     * ECast owns its own internal queue; audio_q is unused on ECast path. */
+    audio_q     = xQueueCreate(AUDIO_QUEUE_LEN, sizeof(audio_msg_t));
     udp_audio_q = xQueueCreate(UDP_AUDIO_QUEUE_LEN, sizeof(audio_msg_t));
-    tx_tokens = xSemaphoreCreateCounting(AUDIO_TX_TOKENS, AUDIO_TX_TOKENS);
+    tx_tokens   = xSemaphoreCreateCounting(AUDIO_TX_TOKENS, AUDIO_TX_TOKENS);
 
-    xTaskCreatePinnedToCore(beacon_task, "beacon", 3072, NULL, 2, NULL, 0);
+    /* ── Start the new Auracast-style broadcaster ─────────────────── */
+    const uint8_t bcode[16] = ECAST_BROADCAST_CODE_BYTES;
+    /* Compose a human name from the room code: "Room 52-127" */
+    uint16_t bld = (ROOM_CODE >> 15) & 0x3FFU;
+    uint16_t rm  = (ROOM_CODE >>  5) & 0x3FFU;
+    char name[24];
+    snprintf(name, sizeof(name), "Room %u-%u", (unsigned)bld, (unsigned)rm);
+
+    /* 64-bit broadcast_id = room_code in low 32, stream_id in high 32.
+     * Stable per-room, distinct per-stream (for multiple sources on one room). */
+    uint64_t bid = ((uint64_t)stream_id << 32) | (uint64_t)ROOM_CODE;
+
+    bool ok = ecast_source_init(bid, stream_id, name, bcode,
+                                /*enable_encryption=*/true);
+    if (!ok) {
+        ESP_LOGE(TAG, "ecast_source_init failed — broadcasts will not start");
+    }
+
+    /* Capture task: produces LC3 frames → ecast_source_publish_audio().
+     * Legacy beacon_task / audio_send_task are stubs that exit immediately. */
     xTaskCreatePinnedToCore(audio_capture_encode_task, "cap_enc", 32768, NULL, TASK_PRIO_CAP_ENC, NULL, 1);
-    xTaskCreatePinnedToCore(audio_send_task, "send", 4096, NULL, TASK_PRIO_SEND, NULL, 0);
     xTaskCreatePinnedToCore(udp_audio_send_task, "udp_send", 4096, NULL, TASK_PRIO_UDP_SEND, NULL, 0);
     xTaskCreatePinnedToCore(udp_server_task, "udp_srv", 4096, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(source_stats_task, "src_stats", 3072, NULL, 1, NULL, 1);

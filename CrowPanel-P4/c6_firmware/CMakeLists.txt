@@ -21,7 +21,7 @@ if(PROJECT_VERSION_MATCH)
 endif()
 
 # Bump version above hosted base to force OTA update when C6 code changes
-set(PROJECT_VER "3.1.16")
+set(PROJECT_VER "4.0.0")
 message(STATUS "C6 firmware version (overridden): ${PROJECT_VER}")
 
 # No extra component directories needed - C6 forwards raw LC3 without decoding
@@ -29,7 +29,7 @@ message(STATUS "C6 firmware version (overridden): ${PROJECT_VER}")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 list(APPEND EXCLUDE_COMPONENTS lwip esp_netif)
 
-set(COMPONENTS esp_timer esptool_py bootloader main nvs_flash esp_rom esp_wifi protocomm driver mqtt wpa_supplicant wifi_provisioning esp_driver_sdio esp_pm)
+set(COMPONENTS esp_timer esptool_py bootloader main nvs_flash esp_rom esp_wifi protocomm driver mqtt wpa_supplicant wifi_provisioning esp_driver_sdio esp_pm mbedtls)
 
 project(crowpanel_c6_firmware)
 idf_build_set_property(COMPILE_OPTIONS "-fdiagnostics-color=always" APPEND)

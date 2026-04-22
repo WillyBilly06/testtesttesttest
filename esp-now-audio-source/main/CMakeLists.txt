@@ -5,6 +5,8 @@ idf_component_register(
         "core/source_core.c"
         "audio/source_audio.c"
         "wifi/source_wifi.c"
+        "ecast_source.c"
+        "ecast_crypto.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_wifi esp_timer nvs_flash esp_http_server liblc3 minimp3 esp_partition spi_flash
+    REQUIRES esp_wifi esp_timer nvs_flash esp_http_server liblc3 minimp3 esp_partition spi_flash mbedtls
 )

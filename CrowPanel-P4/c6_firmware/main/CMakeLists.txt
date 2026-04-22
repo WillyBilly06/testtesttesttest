@@ -67,6 +67,7 @@ endif()
 list(APPEND COMPONENT_SRCS
     "app_main.c"
     "espnow_bridge_handler.c"
+    "ecast_crypto.c"
 )
 
 set(COMPONENT_ADD_INCLUDEDIRS

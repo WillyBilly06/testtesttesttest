@@ -1,5 +1,6 @@
 // MY_NOTE: I split this file out so it's easier for me to tune and debug quickly.
 #include "../core/source_app_internal.h"
+#include "../ecast_source.h"
 
 static void sta_reconnect_timer_cb(TimerHandle_t tmr) {
     (void)tmr;
@@ -315,6 +316,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         if (esp_wifi_get_channel(&primary, &second) == ESP_OK) {
             wifi_channel = primary;
             ESP_LOGI(TAG, "APSTA channel synced to %u", (unsigned)wifi_channel);
+            ecast_source_set_channel(wifi_channel);
         }
 
         refresh_softap_dns_from_sta();
@@ -428,6 +430,7 @@ void wifi_start_apsta(const char *ssid, const char *password) {
         esp_err_t cset = esp_wifi_set_channel(best_ch, WIFI_SECOND_CHAN_NONE);
         if (cset == ESP_OK) {
             wifi_channel = best_ch;
+            ecast_source_set_channel(wifi_channel);
             ESP_LOGI(TAG, "Auto-selected channel %u for ESP-NOW", (unsigned)best_ch);
         } else {
             ESP_LOGW(TAG, "esp_wifi_set_channel(%u) failed: %s (keeping default %u)",
@@ -447,6 +450,7 @@ void wifi_start_apsta(const char *ssid, const char *password) {
         uint8_t primary = WIFI_CHANNEL_DEFAULT;
         if (esp_wifi_get_channel(&primary, &second) == ESP_OK) {
             wifi_channel = primary;
+            ecast_source_set_channel(wifi_channel);
         }
         ensure_napt_enabled();
         ESP_LOGI(TAG, "APSTA ready: ap_ssid=%s ch=%u", CONFIG_SOFTAP_SSID, (unsigned)wifi_channel);

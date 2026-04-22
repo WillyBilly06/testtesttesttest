@@ -17,14 +17,31 @@
 extern "C" {
 #endif
 
-/* Room information (same fields as espnow_evt_room_t but with extra metadata) */
+/* Room information — superset that now carries the EspCastBR beacon
+ * metadata needed for audio decryption.
+ *
+ * Legacy fields (mac/wifi_channel/room_code/stream_id/rssi/valid) stay
+ * unchanged so existing UI code keeps compiling. The ECast fields are
+ * populated when an authenticated beacon arrives and are used by the
+ * audio handler to derive the session key and decrypt frames.
+ */
 typedef struct {
-    uint8_t mac[6];
-    uint8_t wifi_channel;
+    uint8_t  mac[6];
+    uint8_t  wifi_channel;
     uint32_t room_code;
     uint32_t stream_id;
-    int8_t rssi;
-    bool valid;
+    int8_t   rssi;
+    bool     valid;
+
+    /* EspCastBR extension fields (zeroed for legacy beacons) */
+    char     name[24];              /* human-readable room name */
+    uint64_t broadcast_id;
+    uint8_t  enc_iv[8];
+    uint8_t  key_diversifier[8];
+    uint8_t  session_key[16];
+    bool     is_encrypted;
+    bool     session_key_valid;
+    uint16_t pres_delay_us;
 } espnow_room_info_t;
 
 static inline void espnow_decode_room_code(uint32_t room_code, uint16_t *building, uint16_t *room, uint8_t *suffix)

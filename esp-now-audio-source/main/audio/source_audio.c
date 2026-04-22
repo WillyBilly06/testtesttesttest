@@ -1,5 +1,7 @@
 // MY_NOTE: I split this file out so it's easier for me to tune and debug quickly.
 #include "../core/source_app_internal.h"
+#include "../ecast_source.h"
+#include "../ecast_protocol.h"
 #include "minimp3.h"
 #include "esp_partition.h"
 #include "esp_rom_sys.h"
@@ -88,26 +90,12 @@ static bool lc3_encode_stereo_s24(const int32_t *pcm_interleaved_s24, uint8_t *o
     return true;
 }
 
+/* The legacy beacon_task is replaced by ecast_source's built-in beacon
+ * emitter (see ecast_source.c). Stub retained so any stray xTaskCreate
+ * reference still compiles cleanly; it just exits. */
 void beacon_task(void *arg) {
     (void)arg;
-    beacon_msg_t b = {0};
-    b.h.magic = PROTO_MAGIC;
-    b.h.type = MSG_BEACON;
-    b.h.room_code = ROOM_CODE;
-    b.wifi_channel = wifi_channel;
-    b.channels = CHANNELS;
-    b.sample_rate_hz = SAMPLE_RATE_HZ;
-    b.frame_us = LC3_FRAME_US;
-    b.bytes_per_ch = LC3_BYTES_PER_CH;
-    b.stream_id = stream_id;
-
-    add_peer_if_needed(BROADCAST_MAC);
-
-    while (1) {
-        b.wifi_channel = wifi_channel;
-        esp_now_send(BROADCAST_MAC, (const uint8_t *)&b, sizeof(b));
-        vTaskDelay(pdMS_TO_TICKS(BEACON_PERIOD_MS));
-    }
+    vTaskDelete(NULL);
 }
 
 void audio_capture_encode_task(void *arg) {
@@ -262,27 +250,27 @@ void audio_capture_encode_task(void *arg) {
             if (udp_clients[i].in_use) { have_udp = true; break; }
         }
 
-        audio_msg_t m = {0};
-        m.h.magic = PROTO_MAGIC;
-        m.h.type = MSG_AUDIO;
-        m.h.room_code = ROOM_CODE;
-        m.seq = seq_num++;
-        m.payload_len = LC3_BYTES_PER_CH * CHANNELS;
-        m.src_t_us = stream_id;
-        m.flags = 0;
-        m.capture_us = t_us - LC3_FRAME_US;
+        /* Encode LC3 once and publish to the ECast broadcaster, which will
+         * emit RTN redundant copies at SUB_INTERVAL_US spacing. No per-sink
+         * state is maintained; the sink discovers the stream from beacons. */
+        uint8_t lc3[ECAST_AUDIO_BYTES];
+        if (lc3_encode_stereo_s24(pcm_s24, lc3)) {
+            uint32_t capture_us = t_us - LC3_FRAME_US;
+            ecast_source_publish_audio(lc3, capture_us);
 
-        if (lc3_encode_stereo_s24(pcm_s24, m.payload)) {
-            /* ESP-NOW broadcast path: always enqueue */
-            if (audio_q) {
-                if (xQueueSend(audio_q, &m, 0) != pdTRUE) {
-                    audio_msg_t drop;
-                    (void)xQueueReceive(audio_q, &drop, 0);
-                    (void)xQueueSend(audio_q, &m, 0);
-                }
-            }
-            /* UDP path: only when a client is registered */
+            /* UDP path (kept for diagnostics + legacy receivers).
+             * Keeps using the old audio_msg_t format on the UDP socket. */
             if (udp_audio_q && have_udp) {
+                audio_msg_t m = {0};
+                m.h.magic = PROTO_MAGIC;
+                m.h.type = MSG_AUDIO;
+                m.h.room_code = ROOM_CODE;
+                m.seq = seq_num++;
+                m.payload_len = LC3_BYTES_PER_CH * CHANNELS;
+                m.src_t_us = stream_id;
+                m.flags = 0;
+                m.capture_us = capture_us;
+                memcpy(m.payload, lc3, ECAST_AUDIO_BYTES);
                 if (xQueueSend(udp_audio_q, &m, 0) != pdTRUE) {
                     audio_msg_t drop;
                     (void)xQueueReceive(udp_audio_q, &drop, 0);
@@ -305,9 +293,18 @@ void audio_capture_encode_task(void *arg) {
     }
 }
 
+/* The legacy audio_send_task (unicast fanout) is fully replaced by
+ * ecast_source's internal RTN scheduler. Stub exits immediately so any
+ * task-create reference still links.
+ *
+ * Preserved below is the original code (now unreachable) for reference
+ * in case we need to diff against the old unicast path during debugging. */
 void audio_send_task(void *arg) {
     (void)arg;
+    vTaskDelete(NULL);
+    return;
 
+    /* ── UNREACHABLE LEGACY BODY ──────────────────────────────────── */
     audio_msg_t m;
     while (1) {
         if (xQueueReceive(audio_q, &m, portMAX_DELAY) != pdTRUE) continue;

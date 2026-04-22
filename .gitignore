@@ -6,3 +6,6 @@ build/
 managed_components/
 .venv/
 __pycache__/
+
+# EspCastBR private shared secret — must never be committed
+ecast_secret.h

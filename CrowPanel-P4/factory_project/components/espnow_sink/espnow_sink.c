@@ -25,6 +25,8 @@
 #include "lc3.h"
 #include "espnow_protocol.h"
 #include "espnow_sink.h"
+#include "ecast_protocol.h"
+#include "ecast_crypto.h"
 
 static const char *TAG = "espnow_sink";
 
@@ -650,20 +652,212 @@ static void on_evt_fw_ver(uint32_t msg_id, const uint8_t *data, size_t len)
              s_c6_fw_valid ? s_c6_fw_version : "unknown", ver->project);
 }
 
+/* ── EspCastBR handlers ──────────────────────────────────── */
+/* The C6 forwards two things now:
+ *   - ECAST_BEACON: already authenticated (CMAC-verified on C6). We parse,
+ *     derive the AES-CCM session key, and populate the room list.
+ *   - ECAST_AUDIO : already deduplicated (C6 drops RTN retries). We
+ *     decrypt with the active room's session key, then push the plaintext
+ *     LC3 into the existing audio queue so the unchanged playback task
+ *     decodes + outputs it.
+ *
+ * Because RTN=3 copies of every frame are scheduled on the source and the
+ * C6 forwards whichever copy arrives first, any single-copy RF loss is
+ * transparent to the P4 — we never see gaps we would have PLC'd for.
+ */
+
+static uint8_t  s_broadcast_code[16] = ECAST_BROADCAST_CODE_BYTES;
+static volatile uint16_t s_active_stream_id16 = 0;
+static volatile bool     s_active_stream_valid = false;
+
+static int find_or_create_room_by_stream(uint32_t stream_id, const uint8_t *mac_or_null)
+{
+    xSemaphoreTake(s_rooms_mutex, portMAX_DELAY);
+    int idx = -1;
+    for (int i = 0; i < s_room_count; i++) {
+        if (s_rooms[i].stream_id == stream_id) { idx = i; break; }
+    }
+    if (idx < 0 && s_room_count < ESPNOW_SINK_MAX_ROOMS) {
+        idx = s_room_count++;
+        memset(&s_rooms[idx], 0, sizeof(s_rooms[idx]));
+        if (mac_or_null) memcpy(s_rooms[idx].mac, mac_or_null, 6);
+    }
+    xSemaphoreGive(s_rooms_mutex);
+    return idx;
+}
+
+static void on_evt_ecast_beacon(uint32_t msg_id, const uint8_t *data, size_t len)
+{
+    (void)msg_id;
+    update_evt_time();
+    if (len < ECAST_BEACON_FRAME_SIZE) return;
+
+    const ecast_hdr_t *h = (const ecast_hdr_t *)data;
+    if (h->magic != ECAST_MAGIC) return;
+    if (ECAST_TYPE_OF(h->ver_type) != ECAST_TYPE_BEACON) return;
+
+    const ecast_beacon_payload_t *b =
+        (const ecast_beacon_payload_t *)(data + sizeof(ecast_hdr_t));
+
+    int idx = find_or_create_room_by_stream(b->stream_id_full, NULL);
+    if (idx < 0) return;
+
+    xSemaphoreTake(s_rooms_mutex, portMAX_DELAY);
+    espnow_room_info_t *r = &s_rooms[idx];
+    r->wifi_channel  = b->wifi_channel;
+    r->room_code     = (uint32_t)(b->broadcast_id & 0xFFFFFFFFU);
+    r->stream_id     = b->stream_id_full;
+    r->rssi          = 0;   /* no per-frame RSSI in envelope yet; update via EVT_ECAST_RSSI */
+    r->valid         = true;
+    r->broadcast_id  = b->broadcast_id;
+    r->pres_delay_us = b->pres_delay_us;
+    r->is_encrypted  = (b->is_encrypted != 0);
+    memcpy(r->enc_iv,          b->enc_iv,          8);
+    memcpy(r->key_diversifier, b->key_diversifier, 8);
+    memset(r->name, 0, sizeof(r->name));
+    memcpy(r->name, b->name, sizeof(b->name));
+    r->name[sizeof(r->name) - 1] = '\0';
+
+    /* Derive session key once per distinct (stream_id, key_diversifier). */
+    if (r->is_encrypted && !r->session_key_valid) {
+        if (ecast_derive_session_key(s_broadcast_code, r->key_diversifier, r->session_key)) {
+            r->session_key_valid = true;
+            ESP_LOGI(TAG, "ECast room '%s' stream=%08lX: session key derived",
+                     r->name, (unsigned long)r->stream_id);
+        } else {
+            ESP_LOGW(TAG, "ECast room %08lX: session key derivation failed",
+                     (unsigned long)r->stream_id);
+        }
+    }
+    xSemaphoreGive(s_rooms_mutex);
+
+    /* First authenticated beacon auto-selects the stream (MVP behaviour:
+     * one source in range → just play it). For multi-source UI selection
+     * the UI calls espnow_sink_join_room() which calls espnow_sink_select_ecast_stream(). */
+    if (!s_active_stream_valid) {
+        s_active_stream_id16 = (uint16_t)(b->stream_id_full & 0xFFFFU);
+        s_active_stream_valid = true;
+        s_state = ESPNOW_STATE_CONNECTED;
+        if (s_cbs.on_state_change) s_cbs.on_state_change(ESPNOW_STATE_CONNECTED);
+        ESP_LOGI(TAG, "ECast: auto-selected stream=%08lX ('%s')",
+                 (unsigned long)b->stream_id_full, s_rooms[idx].name);
+    }
+
+    if (s_cbs.on_room_found) s_cbs.on_room_found(&s_rooms[idx]);
+}
+
+static void on_evt_ecast_audio(uint32_t msg_id, const uint8_t *data, size_t len)
+{
+    (void)msg_id;
+    update_evt_time();
+    if (len < ECAST_AUDIO_FRAME_SIZE) return;
+
+    const ecast_hdr_t *h = (const ecast_hdr_t *)data;
+    if (h->magic != ECAST_MAGIC) return;
+    if (ECAST_TYPE_OF(h->ver_type) != ECAST_TYPE_AUDIO) return;
+
+    /* Only decrypt for the active stream. */
+    if (!s_active_stream_valid) return;
+    if (h->stream_id16 != s_active_stream_id16) return;
+
+    /* Look up the room by low-16 of stream_id (matches source's id16 stamp). */
+    xSemaphoreTake(s_rooms_mutex, portMAX_DELAY);
+    int idx = -1;
+    for (int i = 0; i < s_room_count; i++) {
+        if ((uint16_t)(s_rooms[i].stream_id & 0xFFFFU) == h->stream_id16 &&
+            s_rooms[i].valid) { idx = i; break; }
+    }
+    uint8_t session_key[16];
+    uint8_t enc_iv[8];
+    bool    encrypted = false;
+    bool    key_valid = false;
+    if (idx >= 0) {
+        encrypted = s_rooms[idx].is_encrypted;
+        key_valid = s_rooms[idx].session_key_valid;
+        memcpy(session_key, s_rooms[idx].session_key, 16);
+        memcpy(enc_iv,      s_rooms[idx].enc_iv,      8);
+    }
+    xSemaphoreGive(s_rooms_mutex);
+
+    if (idx < 0) return;   /* no beacon yet — can't decrypt */
+
+    const uint8_t *cipher_and_mic = data + sizeof(ecast_hdr_t);
+    size_t ct_and_mic_len = sizeof(ecast_audio_plain_t) + ECAST_MIC_LEN;
+
+    ecast_audio_plain_t plain;
+
+    if (encrypted) {
+        if (!key_valid) return;
+        uint8_t nonce[ECAST_NONCE_LEN];
+        ecast_make_nonce(nonce, enc_iv, h->psn, h->copy_idx);
+        if (!ecast_ccm_decrypt(session_key, nonce,
+                               (const uint8_t *)h, sizeof(ecast_hdr_t),
+                               cipher_and_mic, ct_and_mic_len,
+                               (uint8_t *)&plain)) {
+            /* Auth failure — drop silently (forged frame or key mismatch). */
+            return;
+        }
+    } else {
+        /* Unencrypted: layout is plaintext + zeroed MIC. */
+        memcpy(&plain, cipher_and_mic, sizeof(plain));
+    }
+
+    s_packets_rx++;
+
+    /* Pack into legacy audio_raw_t so the unchanged playback task can
+     * consume it. capture_us = presentation time minus the advertised
+     * delay so the existing clock_offset EMA still converges. */
+    espnow_evt_audio_raw_t pkt;
+    pkt.seq         = (uint16_t)(h->psn & 0xFFFFU);
+    pkt.lost_before = 0;
+    pkt.capture_us  = h->pres_time_us
+                      - (idx >= 0 ? s_rooms[idx].pres_delay_us : ECAST_PRES_DELAY_US);
+    memcpy(pkt.payload, plain.lc3, ECAST_AUDIO_BYTES);
+
+    if (s_audio_queue) {
+        if (xQueueSend(s_audio_queue, &pkt, 0) != pdTRUE) {
+            espnow_evt_audio_raw_t stale;
+            if (xQueueReceive(s_audio_queue, &stale, 0) == pdTRUE) s_packets_lost++;
+            if (xQueueSend(s_audio_queue, &pkt, 0) != pdTRUE)      s_packets_lost++;
+        }
+    }
+}
+
+static void on_evt_ecast_rssi(uint32_t msg_id, const uint8_t *data, size_t len)
+{
+    (void)msg_id;
+    update_evt_time();
+    if (len < sizeof(espnow_evt_stats_t)) return;
+    const espnow_evt_stats_t *st = (const espnow_evt_stats_t *)data;
+    ESP_LOGI(TAG, "ECast C6: rx=%lu dupe=%lu beacons_ok=%lu rssi=%d ch=%d sdio_err=%u",
+             (unsigned long)st->packets_rx, (unsigned long)st->packets_lost,
+             (unsigned long)st->plc_frames, st->rssi_last, st->wifi_channel,
+             (unsigned)st->sdio_send_errors);
+
+    /* Also refresh RSSI on all rooms so the UI shows live signal strength. */
+    xSemaphoreTake(s_rooms_mutex, portMAX_DELAY);
+    for (int i = 0; i < s_room_count; i++) s_rooms[i].rssi = st->rssi_last;
+    xSemaphoreGive(s_rooms_mutex);
+}
+
 /* ── Register all SDIO event callbacks ───────────────────── */
 
 static esp_err_t register_event_handlers(void)
 {
     struct { uint32_t id; void (*cb)(uint32_t, const uint8_t *, size_t); } handlers[] = {
-        { ESPNOW_MSG_EVT_STATUS,     on_evt_status     },
-        { ESPNOW_MSG_EVT_ROOM_FOUND, on_evt_room_found },
-        { ESPNOW_MSG_EVT_SCAN_DONE,  on_evt_scan_done  },
-        { ESPNOW_MSG_EVT_JOINED,     on_evt_joined     },
-        { ESPNOW_MSG_EVT_LEFT,       on_evt_left       },
-        { ESPNOW_MSG_EVT_AUDIO,      on_evt_audio      },
-        { ESPNOW_MSG_EVT_STATS,      on_evt_stats      },
-        { ESPNOW_MSG_EVT_ERROR,      on_evt_error      },
-        { ESPNOW_MSG_EVT_FW_VER,     on_evt_fw_ver     },
+        { ESPNOW_MSG_EVT_STATUS,        on_evt_status     },
+        { ESPNOW_MSG_EVT_ROOM_FOUND,    on_evt_room_found },
+        { ESPNOW_MSG_EVT_SCAN_DONE,     on_evt_scan_done  },
+        { ESPNOW_MSG_EVT_JOINED,        on_evt_joined     },
+        { ESPNOW_MSG_EVT_LEFT,          on_evt_left       },
+        { ESPNOW_MSG_EVT_AUDIO,         on_evt_audio      },
+        { ESPNOW_MSG_EVT_STATS,         on_evt_stats      },
+        { ESPNOW_MSG_EVT_ERROR,         on_evt_error      },
+        { ESPNOW_MSG_EVT_FW_VER,        on_evt_fw_ver     },
+        /* ECast channel */
+        { ESPNOW_MSG_EVT_ECAST_BEACON,  on_evt_ecast_beacon },
+        { ESPNOW_MSG_EVT_ECAST_AUDIO,   on_evt_ecast_audio  },
+        { ESPNOW_MSG_EVT_ECAST_RSSI,    on_evt_ecast_rssi   },
     };
 
     for (int i = 0; i < (int)(sizeof(handlers) / sizeof(handlers[0])); i++) {
