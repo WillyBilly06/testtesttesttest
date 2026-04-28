@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "espnow_audio_source",
-    "project_version":    "54c7ba0-dirty",
+    "project_version":    "6779d98-dirty",
     "project_path":       "D:/ESP32-Code/esp-now-audio-source",
     "idf_path":           "D:/Bluetooth Project - Copy/esp-idf",
     "build_dir":          "D:/ESP32-Code/esp-now-audio-source/build",
@@ -1030,7 +1030,7 @@
             "managed_reqs": [],
             "managed_priv_reqs": [],
             "file": "D:/ESP32-Code/esp-now-audio-source/build/esp-idf/esp_wifi/libesp_wifi.a",
-            "sources": [ "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/lib_printf.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/mesh_event.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/smartconfig.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_init.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_default.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_netif.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_default_ap.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/esp32/esp_adapter.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/regulatory/esp_wifi_regulatory.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/smartconfig_ack.c" ],
+            "sources": [ "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/lib_printf.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/mesh_event.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/smartconfig.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_init.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_default.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_netif.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/wifi_default_ap.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/esp_wifi_ecast.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/esp32/esp_adapter.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/regulatory/esp_wifi_regulatory.c", "D:/Bluetooth Project - Copy/esp-idf/components/esp_wifi/src/smartconfig_ack.c" ],
             "include_dirs": [ "include", "include/local", "wifi_apps/include", "wifi_apps/nan_app/include" ]
         },
         "espcoredump": {

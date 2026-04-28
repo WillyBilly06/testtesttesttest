@@ -38,15 +38,23 @@
 /* ─── Timing / redundancy ──────────────────────────────────────────── */
 /* Number of copies of each audio frame transmitted (BIS RTN equivalent).
  * Spaced SUB_INTERVAL_US apart → redundancy window = (RTN-1)*SUB_INTERVAL_US.
- * Raise RTN for worse RF environments; airtime scales linearly. */
-#define ECAST_RTN                  3
+ * Raise RTN for worse RF environments; airtime scales linearly.
+ *
+ * RTN=2 with 5 ms spacing matches Auracast BIG_Sync_Delay for Standard Quality
+ * and gives ~5 ms redundancy window — survives single-packet bursts at 2.4 GHz
+ * without wasting airtime. Bump to 3 in hostile RF; keep at 2 for low-latency. */
+#define ECAST_RTN                  2
 #define ECAST_SUB_INTERVAL_US      5000      /* 5 ms between copies */
 
 /* Presentation delay: the sink plays every frame at
  *   local_time = source_capture_us + PRES_DELAY_US + clock_offset
  * All RTN copies of the frame must arrive before this deadline.
- * Must be ≥ (RTN-1)*SUB_INTERVAL_US + margin for RF + sink pipeline. */
-#define ECAST_PRES_DELAY_US        20000     /* 20 ms */
+ * Must be ≥ (RTN-1)*SUB_INTERVAL_US + margin for RF + sink pipeline.
+ *
+ * At RTN=2 with 5 ms sub-interval the minimum is ~5 ms. 25 ms gives a 20 ms
+ * margin for WiFi retry bursts and C6→P4 SDIO hop while keeping source-side
+ * scheduling latency low. Total end-to-end target: 40-50 ms. */
+#define ECAST_PRES_DELAY_US        25000     /* 25 ms */
 
 /* Beacon emission period on the source */
 #define ECAST_BEACON_PERIOD_MS     100

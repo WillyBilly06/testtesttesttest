@@ -1,0 +1,30 @@
+menu "Slave OTA (C6 coprocessor)"
+
+    config OTA_SLAVE_FORCE_FLASH
+        bool "Force unconditional C6 re-flash on next boot"
+        default n
+        help
+            When enabled, the P4 re-flashes the embedded C6 firmware from the
+            slave_fw partition on every boot until CONFIG_OTA_SLAVE_FORCE_FLASH
+            is cleared and the P4 is reflashed. Skips the C6 application
+            version query and the embedded-vs-C6 version comparison. Use this
+            to recover a C6 that is stuck in a boot loop / not responding to
+            RPC (e.g. after a bad ESP-NOW firmware flash).
+
+            Normal boot flow:
+                1. Query C6 app version via custom RPC.
+                2. Only OTA if the version differs from the embedded binary.
+
+            Force flow (this option):
+                1. Wait for SDIO transport only (no RPC version query).
+                2. Always run esp_hosted_slave_ota_{begin,write,end,activate}.
+                3. Clear the force flag after activation so the next boot
+                   returns to the normal verify path (unless you rebuild with
+                   this option still set).
+
+            IMPORTANT: remember to re-embed the updated C6 binary into the
+            slave_fw partition (rebuild + reflash the P4) before enabling
+            this option, otherwise you will just re-write the same broken
+            firmware that is already on the C6.
+
+endmenu

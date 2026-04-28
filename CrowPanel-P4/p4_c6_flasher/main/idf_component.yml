@@ -1,0 +1,7 @@
+## Pulls TinyUSB CDC for the USB device side of the bridge.
+## v1.7.x is the current stable release with full ESP32-P4 high-speed
+## USB-OTG support.
+dependencies:
+  espressif/esp_tinyusb: "~1.7"
+  idf:
+    version: ">=5.3"

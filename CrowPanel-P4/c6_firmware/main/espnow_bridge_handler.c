@@ -1,4 +1,4 @@
-/*
+ /*
  * C6 EspCastBR receive bridge — pure RX.
  *
  * Responsibilities:
@@ -197,18 +197,28 @@ static void stats_task_fn(void *arg)
 
 /* ─── Public init (called from app_main) ──────────────────────────── */
 
-esp_err_t espnow_sink_c6_init(void)
+/* Deferred ECast bring-up: runs only after the host RPC has called
+ * esp_wifi_init + esp_wifi_start on the slave. Calling esp_now_init()
+ * (or any esp_wifi_* setter) at boot — before the host's RPC has
+ * inited WiFi — fails with ESP_ERR_ESPNOW_NOT_INIT / WIFI_NOT_INIT and
+ * aborts app_main, which is why the ESP-Hosted "slave ready" handshake
+ * would never complete. */
+static void ecast_bringup_once(void)
 {
-    /* WiFi is already inited by ESP-Hosted slave before we get here. Just
-     * lock channel + power-save off + TX-power max for better RX. */
+    static bool s_up = false;
+    if (s_up) return;
+    s_up = true;
+
+    /* Best-effort tuning knobs; ignore errors (we don't control the host's
+     * mode transitions here). */
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_set_max_tx_power(84);
     esp_wifi_set_channel(ECAST_INITIAL_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
     esp_err_t err = esp_now_init();
     if (err != ESP_OK && err != ESP_ERR_ESPNOW_INTERNAL) {
-        ESP_LOGE(TAG, "esp_now_init: %s", esp_err_to_name(err));
-        return err;
+        ESP_LOGE(TAG, "esp_now_init deferred: %s", esp_err_to_name(err));
+        return;
     }
 
     esp_now_register_recv_cb(espnow_recv_cb);
@@ -221,7 +231,29 @@ esp_err_t espnow_sink_c6_init(void)
     p.encrypt = false;
     esp_now_add_peer(&p);
 
-    /* Register per-msg-id callbacks with ESP-Hosted */
+    xTaskCreate(stats_task_fn, "ecast_stats", 3072, NULL, 2, NULL);
+
+    send_status(ESPNOW_STATE_IDLE);
+    ESP_LOGI(TAG, "ECast C6 bridge up (ch=%d)", ECAST_INITIAL_CHANNEL);
+}
+
+static void wifi_evt_handler(void *arg, esp_event_base_t base,
+                             int32_t id, void *data)
+{
+    (void)arg; (void)data;
+    if (base != WIFI_EVENT) return;
+    /* STA_START is the first event we get after host's RPC esp_wifi_start.
+     * WIFI_READY also works but may fire before STA mode is selected. */
+    if (id == WIFI_EVENT_STA_START || id == WIFI_EVENT_AP_START) {
+        ecast_bringup_once();
+    }
+}
+
+esp_err_t espnow_sink_c6_init(void)
+{
+    /* Register SDIO command handlers up-front — these don't depend on
+     * WiFi and the host may send CMD_GET_FW_VER as soon as the RPC
+     * transport is ready. */
     esp_hosted_register_custom_callback(ESPNOW_MSG_CMD_GET_FW_VER,  cmd_fw_ver_cb);
     esp_hosted_register_custom_callback(ESPNOW_MSG_CMD_GET_STATUS,  cmd_get_status_cb);
     esp_hosted_register_custom_callback(ESPNOW_MSG_CMD_ECAST_SET_CH,cmd_set_channel_cb);
@@ -232,9 +264,14 @@ esp_err_t espnow_sink_c6_init(void)
     esp_hosted_register_custom_callback(ESPNOW_MSG_CMD_JOIN,        cmd_legacy_noop_cb);
     esp_hosted_register_custom_callback(ESPNOW_MSG_CMD_LEAVE,       cmd_legacy_noop_cb);
 
-    xTaskCreate(stats_task_fn, "ecast_stats", 3072, NULL, 2, NULL);
+    /* Defer ESP-NOW / WiFi calls until the host has inited+started WiFi. */
+    esp_err_t err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                               wifi_evt_handler, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "event handler register: %s", esp_err_to_name(err));
+        /* Non-fatal: don't abort app_main, hosted transport must come up. */
+    }
 
-    send_status(ESPNOW_STATE_IDLE);
-    ESP_LOGI(TAG, "ECast C6 bridge up (ch=%d)", ECAST_INITIAL_CHANNEL);
+    ESP_LOGI(TAG, "ECast C6 bridge: waiting for host to start WiFi…");
     return ESP_OK;
 }

@@ -21,7 +21,7 @@ if(PROJECT_VERSION_MATCH)
 endif()
 
 # Bump version above hosted base to force OTA update when C6 code changes
-set(PROJECT_VER "4.0.0")
+set(PROJECT_VER "4.0.6")
 message(STATUS "C6 firmware version (overridden): ${PROJECT_VER}")
 
 # No extra component directories needed - C6 forwards raw LC3 without decoding

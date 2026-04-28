@@ -1,0 +1,50 @@
+# ── Target ───────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32p4"
+
+# ── Flash ────────────────────────────────────────────────────────
+# CrowPanel-P4 has a 16 MB SPI flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# ── Console on USB-Serial-JTAG ──────────────────────────────────
+# The CrowPanel-P4's built-in USB-Serial-JTAG is on a *different* USB
+# peripheral than the OTG-HS port that TinyUSB drives. Routing the
+# console there means you can `idf.py monitor` the bridge over the
+# same COM port you flash with, while the new TinyUSB CDC port stays
+# fully ours.
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# ── USB device stack (TinyUSB) ───────────────────────────────────
+CONFIG_TINYUSB_CDC_ENABLED=y
+CONFIG_TINYUSB_CDC_COUNT=1
+# Big CDC buffers so esptool's stub upload (~5KB at 115200 baud) and
+# any C6 ACK bursts never hit backpressure. 512 was too small and
+# caused dropped bytes -> "Serial data stream stopped" in esptool.
+CONFIG_TINYUSB_CDC_RX_BUFSIZE=4096
+CONFIG_TINYUSB_CDC_TX_BUFSIZE=4096
+
+# Friendly device strings so the OS port shows up as "P4 C6 Flasher".
+CONFIG_TINYUSB_DESC_USE_DEFAULT_VID_PID=y
+CONFIG_TINYUSB_DESC_MANUFACTURER_STRING="Espressif"
+CONFIG_TINYUSB_DESC_PRODUCT_STRING="P4 C6 Flasher"
+CONFIG_TINYUSB_DESC_SERIAL_STRING="123456"
+
+# Use the high-speed USB-OTG PHY (ESP32-P4 has both HS-OTG and USB-S/J;
+# the CrowPanel USB-C is wired to HS-OTG).
+# CONFIG_TINYUSB_RHPORT_HS=y is the default for P4 on esp_tinyusb 1.7.
+
+# ── FreeRTOS / scheduling ────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
+
+# ── Logging — quiet during streaming ─────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ── App size: tiny single-app layout, no OTA ─────────────────────
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# ── Misc ─────────────────────────────────────────────────────────
+CONFIG_COMPILER_OPTIMIZATION_PERF=y

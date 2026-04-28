@@ -2565,6 +2565,12 @@ CONFIG_HUMAN_FACE_DETECT_MODEL_LOCATION=0
 # end of models: human_face_detect
 
 #
+# Slave OTA (C6 coprocessor)
+#
+CONFIG_OTA_SLAVE_FORCE_FLASH=y
+# end of Slave OTA (C6 coprocessor)
+
+#
 # models: pedestrian_detect
 #
 CONFIG_PEDESTRIAN_DETECT_PICO_S8_V1=y

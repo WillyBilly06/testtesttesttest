@@ -74,6 +74,25 @@ void ota_slave_set_espnow_supported(bool supported);
  */
 bool ota_slave_espnow_supported(void);
 
+/**
+ * @brief Force-flash the embedded C6 firmware over SDIO, unconditionally.
+ *
+ * Bypasses the normal verify path entirely:
+ *   - Does NOT query the C6 application version (no custom RPC).
+ *   - Does NOT compare versions before writing.
+ *   - Only waits for is_transport_tx_ready() instead of the RPC fwversion
+ *     probe, so it works even if the C6 is stuck in a boot loop or never
+ *     reaches user code, as long as the ESP-Hosted slave transport task
+ *     came up.
+ *
+ * Intended as a recovery path when a bad C6 firmware image has been
+ * activated. The caller must subsequently invoke
+ * ota_slave_activate_if_supported() to reboot the C6 into the new image.
+ *
+ * @return ESP_OK on successful transfer, error code otherwise.
+ */
+esp_err_t ota_slave_force_flash(void);
+
 #ifdef __cplusplus
 }
 #endif

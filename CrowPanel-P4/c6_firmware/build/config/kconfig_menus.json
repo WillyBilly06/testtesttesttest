@@ -26315,6 +26315,16 @@
                     {
                         "children": [],
                         "depends_on": "ESP_WIFI_ENABLED || ESP_HOST_WIFI_ENABLED",
+                        "help": "Optimises the Wi-Fi stack for broadcast-audio streaming:\n  - Puts hot TX/RX code in IRAM (lower + more deterministic latency).\n  - esp_wifi_ecast_apply_low_latency() disables AMPDU TX/RX,\n    power-save, and min-idle to cut queueing latency.\n  - Recommended companion options (tune in your project's\n    sdkconfig.defaults, not globally): disable AMPDU and\n    raise ESP_WIFI_STATIC_RX_BUFFER_NUM to >=16.\n\nEnable this if your project uses the EspCastBR protocol\n(Auracast-style broadcast audio). Does nothing for projects\nthat don't call esp_wifi_ecast_apply_low_latency().",
+                        "id": "ESP_WIFI_ECAST_LOW_LATENCY",
+                        "name": "ESP_WIFI_ECAST_LOW_LATENCY",
+                        "range": null,
+                        "title": "EspCastBR low-latency broadcast profile",
+                        "type": "bool"
+                    },
+                    {
+                        "children": [],
+                        "depends_on": "ESP_WIFI_ENABLED || ESP_HOST_WIFI_ENABLED",
                         "help": "Enables bss max idle support for Station and SoftAP. BSS max idle period enables an SoftAP to indicate\na time period during which the AP does not disassociate a STA due to nonreceipt of frames from the STA.\nFor station, max idle period is default 10 (1000TUs) and can be set through\nESP_WIFI_SLP_DEFAULT_MAX_ACTIVE_TIME. For softap, bss max idle parameters will be set through\nbss_max_idle_cfg in wifi_ap_config_t.",
                         "id": "ESP_WIFI_BSS_MAX_IDLE_SUPPORT",
                         "name": "ESP_WIFI_BSS_MAX_IDLE_SUPPORT",

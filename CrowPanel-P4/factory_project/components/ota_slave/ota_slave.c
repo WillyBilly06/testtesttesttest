@@ -595,3 +595,135 @@ esp_err_t ota_slave_activate_if_supported(void)
     // Should never reach here
     return ESP_OK;
 }
+
+/*
+ * Force-flash path — recovery mode.
+ *
+ * Modeled after the "crowpanel-p4-c6-sdio-ota" reference tool: skip every
+ * verify step and drive the ESP-Hosted slave_ota_* RPCs directly as soon as
+ * the SDIO transport is ready. We deliberately do NOT call
+ * esp_hosted_get_coprocessor_fwversion() here — if the C6 is bricked in a
+ * reboot loop it may never answer that RPC, but the slave_ota_begin RPC is
+ * served out of a dedicated path that comes up during C6 bootloader/early
+ * init, so OTA can still succeed.
+ */
+esp_err_t ota_slave_force_flash(void)
+{
+    ESP_LOGW(TAG, "*** FORCE-FLASH MODE: skipping version verification ***");
+
+    /* Wait for SDIO transport only — no RPC probes. */
+    ESP_LOGI(TAG, "Waiting for ESP-Hosted SDIO transport (up to 30s)...");
+    int wait = 0;
+    while (!is_transport_tx_ready() && wait < 300) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        wait++;
+        if (wait % 20 == 0) {
+            ESP_LOGI(TAG, "FORCE: still waiting for transport... (%ds)", wait / 10);
+        }
+    }
+    if (!is_transport_tx_ready()) {
+        ESP_LOGE(TAG, "FORCE: transport not ready after 30s, aborting");
+        return ESP_ERR_TIMEOUT;
+    }
+    ESP_LOGI(TAG, "FORCE: transport active");
+
+    /* Unconditionally assume activate is supported. The force path is only
+     * useful with modern (>= v2.6.0) slave firmware anyway; if that isn't
+     * true the activate RPC will just fail harmlessly. */
+    s_activate_supported = true;
+
+    /* Locate the embedded slave firmware partition. */
+    const esp_partition_t *slave_part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, 0x40, SLAVE_FW_PARTITION_LABEL);
+    if (!slave_part) {
+        ESP_LOGE(TAG, "FORCE: slave_fw partition not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGI(TAG, "FORCE: slave_fw partition at 0x%lx, size %lu",
+             slave_part->address, slave_part->size);
+
+    /* Minimal sanity check: the first byte must be the ESP32 image magic.
+     * We do NOT compare versions. */
+    uint8_t magic = 0;
+    esp_err_t ret = esp_partition_read(slave_part, 0, &magic, 1);
+    if (ret != ESP_OK || magic != ESP_IMAGE_MAGIC) {
+        ESP_LOGE(TAG, "FORCE: slave_fw has no valid image (magic=0x%02x)", magic);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Extract version purely for logging and for the post-OTA NVS bookkeeping
+     * so the normal-path check on the next boot stays consistent. */
+    char embedded_version[32] = {0};
+    char embedded_project[32] = {0};
+    if (get_firmware_version(slave_part, embedded_version, sizeof(embedded_version),
+                             embedded_project, sizeof(embedded_project)) != ESP_OK) {
+        strncpy(embedded_version, "unknown", sizeof(embedded_version) - 1);
+    }
+    ESP_LOGI(TAG, "FORCE: embedded firmware project='%s' version='%s'",
+             embedded_project, embedded_version);
+
+    /* Compute actual binary length (avoid writing 0xFF padding). */
+    size_t fw_size = 0;
+    ret = get_firmware_size(slave_part, &fw_size);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "FORCE: image header parse failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "FORCE: image size=%u bytes", (unsigned)fw_size);
+
+    uint8_t *chunk = malloc(OTA_CHUNK_SIZE);
+    if (!chunk) return ESP_ERR_NO_MEM;
+
+    ret = esp_hosted_slave_ota_begin();
+    if (ret != ESP_OK) {
+        free(chunk);
+        ESP_LOGE(TAG, "FORCE: esp_hosted_slave_ota_begin failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    size_t total_written = 0;
+    int last_decile = -1;
+    for (size_t offset = 0; offset < fw_size; offset += OTA_CHUNK_SIZE) {
+        size_t len = (offset + OTA_CHUNK_SIZE > fw_size) ? (fw_size - offset) : OTA_CHUNK_SIZE;
+
+        ret = esp_partition_read(slave_part, offset, chunk, len);
+        if (ret != ESP_OK) {
+            free(chunk);
+            ESP_LOGE(TAG, "FORCE: partition read @%u failed: %s",
+                     (unsigned)offset, esp_err_to_name(ret));
+            return ret;
+        }
+
+        ret = esp_hosted_slave_ota_write(chunk, len);
+        if (ret != ESP_OK) {
+            free(chunk);
+            ESP_LOGE(TAG, "FORCE: ota_write @%u failed: %s",
+                     (unsigned)offset, esp_err_to_name(ret));
+            return ret;
+        }
+
+        total_written += len;
+        int decile = (total_written * 10) / fw_size;
+        if (decile != last_decile) {
+            ESP_LOGI(TAG, "FORCE: OTA %d%% (%u/%u)", decile * 10,
+                     (unsigned)total_written, (unsigned)fw_size);
+            last_decile = decile;
+        }
+    }
+
+    free(chunk);
+
+    ret = esp_hosted_slave_ota_end();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "FORCE: esp_hosted_slave_ota_end failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    strncpy(s_target_version, embedded_version, sizeof(s_target_version) - 1);
+    s_target_version[sizeof(s_target_version) - 1] = '\0';
+    s_transfer_completed = true;
+
+    ESP_LOGI(TAG, "FORCE: transfer complete — %u bytes written, version '%s'",
+             (unsigned)total_written, embedded_version);
+    return ESP_OK;
+}

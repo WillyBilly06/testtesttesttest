@@ -68,7 +68,11 @@ static void start_c6_init_task(void)
         bool sink_ready = false;
 
         /* Fast path: on normal boots, bring up sink as soon as transport is ready
-         * (non-RPC readiness check) so C6 status/FW can appear earlier in UI. */
+         * (non-RPC readiness check) so C6 status/FW can appear earlier in UI.
+         * Skipped when force-flashing — the C6 is assumed broken/unresponsive
+         * and we must keep the custom-data channel idle until the OTA RPCs
+         * complete. */
+#if !CONFIG_OTA_SLAVE_FORCE_FLASH
         if (!s_post_ota_c6_delay_required) {
             int wait_ticks = 0;
             while (!is_transport_tx_ready() && wait_ticks < 120) {
@@ -87,6 +91,7 @@ static void start_c6_init_task(void)
                 }
             }
         }
+#endif
 
         if (s_post_ota_c6_delay_required) {
             ESP_LOGW("c6_init", "Waiting 8s for C6 OTA validation window before OTA checks...");
@@ -95,11 +100,19 @@ static void start_c6_init_task(void)
         }
 
         // Step 1: Check version & OTA if needed
+#if CONFIG_OTA_SLAVE_FORCE_FLASH
+        ESP_LOGW("c6_init", "CONFIG_OTA_SLAVE_FORCE_FLASH is set — forcing C6 re-flash");
+        esp_err_t ota_ret = ota_slave_force_flash();
+        if (ota_ret != ESP_OK) {
+            ESP_LOGE("c6_init", "Force-flash failed: %s", esp_err_to_name(ota_ret));
+        }
+#else
         esp_err_t ota_ret = ota_slave_flash_if_needed();
         if (ota_ret != ESP_OK) {
             ESP_LOGW("c6_init", "Slave OTA check returned: %s (continuing with existing firmware)",
                      esp_err_to_name(ota_ret));
         }
+#endif
 
         // Step 2: Activate new firmware if OTA was performed
         if (ota_ret == ESP_OK && ota_slave_transfer_completed()) {

@@ -40,29 +40,30 @@ static const char *TAG = "espnow_sink";
 #define PLC_MAX_GAP_FILL       1   /* max PLC frames inserted for lost_before gap (1 frame = 7.5ms repair, inaudible) */
 #define PLC_MAX_TIMEOUT       80   /* max consecutive timeout-PLC frames (~600ms) */
 #define SILENCE_MAX         2000   /* silence frames before full reset (~15s)      */
-/* Latency budget (target: end-to-end < 100 ms):
+/* Latency budget (target: end-to-end 40-50 ms with RTN=2 redundancy):
  *   Source capture+encode+queue+TX  ~  8 ms
+ *   RTN=2 second-copy window        ~  5 ms
  *   Over-air at 24 Mbps             ~  1-3 ms
  *   C6 RX callback + SDIO forward   ~  5-8 ms
- *   P4 prebuffer (below)            ~ 60 ms
+ *   P4 TARGET_LAG playout wait      ~ 25 ms (absorbs jitter + retry bursts)
  *   I2S DMA output                  ~  5 ms
  *   ─────────────────────────────────────────
- *   Total                           ~ 80-90 ms
+ *   Total                           ~ 45 ms ✓
  *
- * PREBUFFER_FRAMES 8 = 60 ms. This is the largest latency lever; keep
- * just enough to absorb typical 802.11 retry bursts (~3-5 frames) plus
- * margin. Anything larger pushes end-to-end over the 100 ms cap. */
-#define PREBUFFER_FRAMES       8   /* ~60 ms prebuffer (end-to-end ≈ 80-90 ms) */
+ * PREBUFFER_FRAMES is the startup-only prebuffer. Steady-state latency is
+ * governed by TARGET_LAG_US (the playout scheduler below). Keep prebuffer
+ * small so resync after a drop doesn't add headstart latency. */
+#define PREBUFFER_FRAMES       3   /* ~22 ms startup prebuffer */
 #define DRIFT_QUEUE_LOW        1   /* only pad if queue about to empty */
-#define DRIFT_QUEUE_HIGH      18   /* trim only if queue >18 (~135 ms) — handles retry bursts up to +10 above prebuffer */
+#define DRIFT_QUEUE_HIGH       8   /* trim only if queue >8 (~60 ms) — ~40 ms of burst headroom */
 #define RX_TIMEOUT_MS         20   /* > 7.5 ms frame + jitter margin */
 
 /* Playout scheduler: all sinks using the same TARGET_LAG_US play the same
  * sample at the same wall-clock time (modulo RF jitter), giving inter-receiver
- * sync within ±5 ms. 45 ms target = ~6 ms typical RF+SDIO path + ~39 ms
+ * sync within ±5 ms. 25 ms target = ~8 ms typical RF+SDIO path + ~17 ms
  * jitter/burst-loss headroom. Combined with ~5 ms I2S DMA, end-to-end
- * latency lands at ~55-60 ms (well under AudioFetch Express 5's ~115 ms). */
-#define TARGET_LAG_US      45000
+ * latency lands at ~40-45 ms. Raise to 35 ms if RF environment is noisy. */
+#define TARGET_LAG_US      25000
 #define PHASE_EARLY_MIN_US   200   /* ignore <200 µs early (spin-wait overhead) */
 #define PHASE_EARLY_MAX_US 10000   /* cap single delay to 10 ms to preserve WDT feeding */
 

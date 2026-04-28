@@ -6,6 +6,9 @@
 		},
 		{
 			"path": "."
+		},
+		{
+			"path": "../Bluetooth Project - Copy/esp-idf"
 		}
 	],
 	"settings": {
