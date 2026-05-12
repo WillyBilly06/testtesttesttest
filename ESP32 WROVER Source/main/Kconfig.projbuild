@@ -12,4 +12,28 @@ config ROOM_AUDIO_LC3_BITRATE
     default 31200
     range 16000 320000
 
+choice ROOM_AUDIO_PHY_RATE
+    prompt "ESP-NOW audio PHY rate"
+    default ROOM_AUDIO_PHY_RATE_MCS3
+    help
+        Select the broadcast ESP-NOW PHY rate. MCS3 gives low airtime
+        nearby, while MCS1/MCS2 or OFDM can be tested for longer range.
+
+config ROOM_AUDIO_PHY_RATE_MCS1
+    bool "MCS1 HT20 long GI"
+
+config ROOM_AUDIO_PHY_RATE_MCS2
+    bool "MCS2 HT20 long GI"
+
+config ROOM_AUDIO_PHY_RATE_MCS3
+    bool "MCS3 HT20 long GI"
+
+config ROOM_AUDIO_PHY_RATE_OFDM6
+    bool "OFDM 6 Mbps"
+
+config ROOM_AUDIO_PHY_RATE_OFDM12
+    bool "OFDM 12 Mbps"
+
+endchoice
+
 endmenu

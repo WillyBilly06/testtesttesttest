@@ -178,6 +178,7 @@ typedef struct {
 
 /* ── Module state ──────────────────────────────────────────────────── */
 static QueueHandle_t       s_hello_queue;
+static QueueHandle_t       s_peer_cleanup_q;
 static QueueHandle_t       s_pcm_free_q;
 static QueueHandle_t       s_pcm_full_q;
 static SemaphoreHandle_t   s_tx_tokens;
@@ -212,6 +213,28 @@ static const tx_sched_t s_tx_sched[RTN] = {
     {1, 2},
     {2, 3},
 };
+
+#if defined(CONFIG_ROOM_AUDIO_PHY_RATE_MCS1)
+#define AUDIO_PHY_MODE WIFI_PHY_MODE_HT20
+#define AUDIO_PHY_RATE WIFI_PHY_RATE_MCS1_LGI
+#define AUDIO_PHY_NAME "MCS1-HT20-LGI"
+#elif defined(CONFIG_ROOM_AUDIO_PHY_RATE_MCS2)
+#define AUDIO_PHY_MODE WIFI_PHY_MODE_HT20
+#define AUDIO_PHY_RATE WIFI_PHY_RATE_MCS2_LGI
+#define AUDIO_PHY_NAME "MCS2-HT20-LGI"
+#elif defined(CONFIG_ROOM_AUDIO_PHY_RATE_OFDM6)
+#define AUDIO_PHY_MODE WIFI_PHY_MODE_11G
+#define AUDIO_PHY_RATE WIFI_PHY_RATE_6M
+#define AUDIO_PHY_NAME "OFDM-6M"
+#elif defined(CONFIG_ROOM_AUDIO_PHY_RATE_OFDM12)
+#define AUDIO_PHY_MODE WIFI_PHY_MODE_11G
+#define AUDIO_PHY_RATE WIFI_PHY_RATE_12M
+#define AUDIO_PHY_NAME "OFDM-12M"
+#else
+#define AUDIO_PHY_MODE WIFI_PHY_MODE_HT20
+#define AUDIO_PHY_RATE WIFI_PHY_RATE_MCS3_LGI
+#define AUDIO_PHY_NAME "MCS3-HT20-LGI"
+#endif
 
 static void random_bytes(uint8_t *out, size_t len) {
     for (size_t i = 0; i < len; i += 4) {
@@ -292,7 +315,6 @@ static uint32_t crc32_audio(const uint8_t *data, size_t len) {
 
 /* ── ESP-NOW send callback ─────────────────────────────────────────── */
 static void espnow_send_cb(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-    (void)info;
     if (status == ESP_NOW_SEND_SUCCESS) {
         s_tx_cb_ok++;
     } else {
@@ -300,6 +322,13 @@ static void espnow_send_cb(const wifi_tx_info_t *info, esp_now_send_status_t sta
     }
     if (s_tx_tokens) {
         xSemaphoreGive(s_tx_tokens);
+    }
+
+    if (info && info->des_addr && s_peer_cleanup_q &&
+        memcmp(info->des_addr, BCAST, ESP_NOW_ETH_ALEN) != 0) {
+        uint8_t mac[ESP_NOW_ETH_ALEN];
+        memcpy(mac, info->des_addr, sizeof(mac));
+        (void)xQueueSend(s_peer_cleanup_q, mac, 0);
     }
 }
 
@@ -377,6 +406,7 @@ static void send_one_audio_packet(const tx_frame_t *frame, uint8_t copy_idx)
     pkt.copy_count     = RTN;
     pkt.frame_bytes    = (uint8_t)s_frame_bytes;
     pkt.channels       = AUDIO_CHANNELS;
+    /* CRC32 is for accidental corruption only; it is not an authentication tag. */
     pkt.payload_crc32  = frame->payload_crc32;
     pkt.copy_idx       = copy_idx;
     memcpy(pkt.payload, frame->payload, s_frame_bytes);
@@ -466,11 +496,11 @@ static void wifi_espnow_init(void) {
     peer.encrypt = false;
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
 
-    /* Four copies per 7.5 ms frame needs airtime headroom. MCS3 keeps the
-     * 1.875 ms packet cadence realistic while staying on HT20. */
+    /* Four copies per 7.5 ms frame needs airtime headroom. Keep this
+     * Kconfig-selectable so range can be tested without changing code. */
     esp_now_rate_config_t rcfg = {
-        .phymode = WIFI_PHY_MODE_HT20,
-        .rate    = WIFI_PHY_RATE_MCS3_LGI,
+        .phymode = AUDIO_PHY_MODE,
+        .rate    = AUDIO_PHY_RATE,
         .ersu    = false,
         .dcm     = false,
     };
@@ -478,7 +508,7 @@ static void wifi_espnow_init(void) {
     if (re != ESP_OK)
         ESP_LOGW(TAG, "PHY rate config: %s", esp_err_to_name(re));
 
-    ESP_LOGI(TAG, "WiFi ch %d, ESP-NOW ready, PHY=MCS3-HT20", ESPNOW_CHANNEL);
+    ESP_LOGI(TAG, "WiFi ch %d, ESP-NOW ready, PHY=%s", ESPNOW_CHANNEL, AUDIO_PHY_NAME);
 }
 
 /* ── ESP-NOW receive callback (handshake only) ─────────────────────── */
@@ -562,10 +592,19 @@ static void send_accept(const hello_event_t *ev) {
     }
     ESP_LOGI(TAG, "Authenticated sink " MACSTR ", accept=%s",
              MAC2STR(ev->mac), esp_err_to_name(err));
-    if (err == ESP_OK) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+    if (err != ESP_OK) {
+        esp_now_del_peer(ev->mac);
     }
-    esp_now_del_peer(ev->mac);
+}
+
+static void peer_cleanup_task(void *arg) {
+    (void)arg;
+    uint8_t mac[ESP_NOW_ETH_ALEN];
+    while (1) {
+        if (xQueueReceive(s_peer_cleanup_q, mac, portMAX_DELAY) == pdTRUE) {
+            esp_now_del_peer(mac);
+        }
+    }
 }
 
 static void handshake_task(void *arg) {
@@ -799,7 +838,9 @@ void app_main(void) {
 
     s_tx_tokens = xSemaphoreCreateCounting(ESPNOW_MAX_IN_FLIGHT, ESPNOW_MAX_IN_FLIGHT);
     s_hello_queue = xQueueCreate(HANDSHAKE_QUEUE, sizeof(hello_event_t));
-    if (!s_pcm_free_q || !s_pcm_full_q || !s_tx_tokens || !s_hello_queue) {
+    s_peer_cleanup_q = xQueueCreate(HANDSHAKE_QUEUE, ESP_NOW_ETH_ALEN);
+    if (!s_pcm_free_q || !s_pcm_full_q || !s_tx_tokens ||
+        !s_hello_queue || !s_peer_cleanup_q) {
         ESP_LOGE(TAG, "Queue/semaphore creation failed");
         return;
     }
@@ -810,12 +851,16 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Room %s on Wi-Fi ch %d", CONFIG_ROOM_AUDIO_ROOM_ID, ESPNOW_CHANNEL);
     ESP_LOGI(TAG, "Stereo LC3: %d Hz, %d us, %d-bit, %d+%d=%d B/frame, "
-             "RTN=%d sub=%dus stream=%" PRIu32,
+             "RTN=%d sub=%dus stream=%" PRIu32 " phy=%s tick_hz=%u",
              AUDIO_RATE_HZ, LC3_DT_US, AUDIO_BITS_PER_SAMPLE,
-             s_per_ch, s_per_ch, s_frame_bytes, RTN, SUB_INTERVAL_US, s_stream_id);
+             s_per_ch, s_per_ch, s_frame_bytes, RTN, SUB_INTERVAL_US,
+             s_stream_id, AUDIO_PHY_NAME, (unsigned)configTICK_RATE_HZ);
+    ESP_LOGI(TAG, "Audio payload integrity: CRC32 only (non-security); "
+                  "session key is delivered by CMAC-authenticated ACCEPT");
 
     /* Core 0 tasks (WiFi lives here; PCM capture blocks only on I2S DMA) */
     xTaskCreatePinnedToCore(beacon_task,    "room_beacon", 4096, NULL, 4,  NULL, 0);
+    xTaskCreatePinnedToCore(peer_cleanup_task, "peer_clean", 3072, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(handshake_task, "room_auth",   6144, NULL, 5,  NULL, 0);
     xTaskCreatePinnedToCore(pcm1808_reader_task, "pcm1808_rx", 8192, NULL, 18, NULL, 0);
 

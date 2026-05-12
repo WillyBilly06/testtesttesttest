@@ -50,6 +50,15 @@ static const char *TAG = "assist_sink";
 #define AUX_VOLUME_BOOST_PCT 100
 #define PLAYBACK_TASK_STACK  24576
 
+_Static_assert(ESPNOW_LC3_FRAME_US == 7500, "P4 ESP-NOW LC3 frame duration must be 7.5 ms");
+_Static_assert(ESPNOW_SAMPLE_RATE_HZ == 48000, "P4 ESP-NOW sample rate must be 48 kHz");
+_Static_assert(ESPNOW_CHANNELS == 2, "P4 ESP-NOW audio must be stereo");
+_Static_assert(ESPNOW_BITS_PER_SAMPLE == 24, "P4 decoded PCM must be 24-bit");
+_Static_assert(ESPNOW_LC3_BYTES_PER_CH == 72, "P4 ESP-NOW LC3 channel payload must be 72 bytes");
+_Static_assert(ESPNOW_LC3_FRAME_BYTES == 144, "P4 ESP-NOW stereo payload must be 144 bytes");
+_Static_assert(ESPNOW_AUDIO_COPY_DEFAULT == 4, "P4 ESP-NOW audio must use four copies");
+_Static_assert((JB_SIZE & (JB_SIZE - 1)) == 0, "P4 jitter ring size must be a power of two");
+
 typedef struct {
     bool     valid;
     uint32_t stream_id;
@@ -103,6 +112,7 @@ static volatile bool s_audio_rx_active;
 static uint32_t s_audio_stream_id;
 
 static volatile uint32_t s_packets_rx;
+static volatile uint32_t s_valid_packets;
 static volatile uint32_t s_packets_lost;
 static volatile uint32_t s_duplicate_drops;
 static volatile uint32_t s_late_drops;
@@ -533,12 +543,12 @@ static void playback_task_fn(void *arg)
             }
             xSemaphoreGive(s_jb.mutex);
             ESP_LOGI(TAG,
-                     "RX: valid=%" PRIu32 " dup=%" PRIu32 " late=%" PRIu32
-                     " wrong_stream=%" PRIu32 " crc=%" PRIu32 " plc=%" PRIu32
+                     "RX: valid=%" PRIu32 " decoded=%" PRIu32 " dup=%" PRIu32
+                     " late=%" PRIu32 " wrong_stream=%" PRIu32 " crc=%" PRIu32 " plc=%" PRIu32
                      " overflow=%" PRIu32 " copy=[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]"
                      " prebuffer=%u level=%d play_seq=%" PRIu32 " stream=%" PRIu32
                      " stack_free=%u",
-                     s_packets_rx, s_duplicate_drops, s_late_drops,
+                     s_valid_packets, s_packets_rx, s_duplicate_drops, s_late_drops,
                      s_wrong_stream_drops, s_crc_failures, s_plc_frames,
                      s_jitter_overflow, s_copy_hist[0], s_copy_hist[1],
                      s_copy_hist[2], s_copy_hist[3], prebuffer, level,
@@ -642,6 +652,7 @@ static void on_evt_joined(uint32_t msg_id, const uint8_t *data, size_t len, void
     ESP_LOGI(TAG, "Joined room code=0x%08" PRIX32 " stream=%" PRIu32,
              joined->room_code, joined->stream_id);
     s_packets_rx = 0;
+    s_valid_packets = 0;
     s_packets_lost = 0;
     s_duplicate_drops = 0;
     s_late_drops = 0;
@@ -783,6 +794,7 @@ static void on_evt_audio(uint32_t msg_id, const uint8_t *data, size_t len, void 
     }
 
     if (jb_insert_packet(&s_jb, pkt)) {
+        s_valid_packets++;
         s_last_audio_ms = now_ms();
     }
 }

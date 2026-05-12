@@ -125,6 +125,15 @@ typedef struct __attribute__((packed)) {
     uint8_t  payload[ESPNOW_AUDIO_MAX_FRAME_BYTES];
 } audio_msg_t;
 
+_Static_assert(ESPNOW_LC3_FRAME_US == 7500, "C6 ESP-NOW LC3 frame duration must be 7.5 ms");
+_Static_assert(ESPNOW_SAMPLE_RATE_HZ == 48000, "C6 ESP-NOW sample rate must be 48 kHz");
+_Static_assert(ESPNOW_CHANNELS == 2, "C6 ESP-NOW audio must be stereo");
+_Static_assert(ESPNOW_LC3_BYTES_PER_CH == 72, "C6 ESP-NOW LC3 channel payload must be 72 bytes");
+_Static_assert(ESPNOW_LC3_FRAME_BYTES == 144, "C6 ESP-NOW stereo payload must be 144 bytes");
+_Static_assert(ESPNOW_AUDIO_COPY_DEFAULT == 4, "C6 ESP-NOW audio must use four copies");
+_Static_assert(sizeof(((audio_msg_t *)0)->payload) == ESPNOW_LC3_FRAME_BYTES,
+               "C6 audio_msg_t payload must carry one full LC3 stereo frame");
+
 /* ───── Room list ───── */
 
 typedef struct {
@@ -480,6 +489,16 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
             ESP_LOGW(TAG, "ACCEPT missing stream_id");
             return;
         }
+        if (accept.stream_id != s_selected_stream_id) {
+            ESP_LOGW(TAG, "ACCEPT stream mismatch got=%" PRIu32 " expected=%" PRIu32,
+                     accept.stream_id, s_selected_stream_id);
+            return;
+        }
+        if (accept.frame_bytes != ESPNOW_LC3_FRAME_BYTES) {
+            ESP_LOGW(TAG, "ACCEPT frame size mismatch got=%u expected=%u",
+                     accept.frame_bytes, ESPNOW_LC3_FRAME_BYTES);
+            return;
+        }
         if (aes_ctr_crypt(MASTER_KEY, accept.key_nonce,
                           accept.encrypted_audio_key, s_audio_key, 32) != ESP_OK) {
             send_error(ESP_FAIL, "Key decrypt failed");
@@ -523,12 +542,15 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
 
         audio_msg_t audio;
         memcpy(&audio, data, sizeof(audio));
-        if (audio.frame_bytes != ESPNOW_LC3_FRAME_BYTES ||
+        if (audio.magic != PROTO_MAGIC ||
+            audio.version != PROTO_VERSION ||
+            audio.type != MSG_AUDIO ||
+            audio.frame_bytes != ESPNOW_LC3_FRAME_BYTES ||
             audio.channels != ESPNOW_CHANNELS ||
             audio.room_hash != s_selected_room_hash ||
             audio.stream_id != s_selected_stream_id ||
             audio.copy_count != ESPNOW_AUDIO_COPY_DEFAULT ||
-            audio.copy_idx >= audio.copy_count) {
+            audio.copy_idx >= ESPNOW_AUDIO_COPY_DEFAULT) {
             return;
         }
         if (crc32_audio(audio.payload, ESPNOW_LC3_FRAME_BYTES) != audio.payload_crc32) {
