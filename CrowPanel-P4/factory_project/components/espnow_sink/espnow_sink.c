@@ -48,6 +48,7 @@ static const char *TAG = "assist_sink";
 #define JB_PREFILL_MAX       12
 #define AUX_DMA_FRAME_SAMPLES 120
 #define AUX_VOLUME_BOOST_PCT 100
+#define PLAYBACK_TASK_STACK  24576
 
 typedef struct {
     bool     valid;
@@ -535,12 +536,14 @@ static void playback_task_fn(void *arg)
                      "RX: valid=%" PRIu32 " dup=%" PRIu32 " late=%" PRIu32
                      " wrong_stream=%" PRIu32 " crc=%" PRIu32 " plc=%" PRIu32
                      " overflow=%" PRIu32 " copy=[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]"
-                     " prebuffer=%u level=%d play_seq=%" PRIu32 " stream=%" PRIu32,
+                     " prebuffer=%u level=%d play_seq=%" PRIu32 " stream=%" PRIu32
+                     " stack_free=%u",
                      s_packets_rx, s_duplicate_drops, s_late_drops,
                      s_wrong_stream_drops, s_crc_failures, s_plc_frames,
                      s_jitter_overflow, s_copy_hist[0], s_copy_hist[1],
                      s_copy_hist[2], s_copy_hist[3], prebuffer, level,
-                     play_seq, s_audio_stream_id);
+                     play_seq, s_audio_stream_id,
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
             last_plc_frames = s_plc_frames;
             last_late_drops = s_late_drops;
             next_stats_ms = now + 5000;
@@ -1003,7 +1006,8 @@ esp_err_t espnow_sink_init(const espnow_sink_callbacks_t *cbs)
     init_direct_i2s();
 
     /* Keep AUX I2S above decode so the output clock never waits on app work. */
-    xTaskCreatePinnedToCore(playback_task_fn, "playback", 4096, NULL, 24, &s_playback_task, 1);
+    xTaskCreatePinnedToCore(playback_task_fn, "playback", PLAYBACK_TASK_STACK, NULL, 24,
+                            &s_playback_task, 1);
 
     s_state = ESPNOW_STATE_NOT_INIT;
     s_last_evt_ms = now_ms();
