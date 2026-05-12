@@ -737,7 +737,12 @@ static void on_evt_audio_config(uint32_t msg_id, const uint8_t *data, size_t len
         return;
     }
 
-    s_audio_copy_count = cfg->audio_copy_count ? cfg->audio_copy_count : ESPNOW_AUDIO_COPY_DEFAULT;
+    if (cfg->audio_copy_count != 0 && cfg->audio_copy_count != ESPNOW_AUDIO_COPY_DEFAULT) {
+        ESP_LOGE(TAG, "Unsupported ESP-NOW copy count %u", cfg->audio_copy_count);
+        return;
+    }
+
+    s_audio_copy_count = ESPNOW_AUDIO_COPY_DEFAULT;
     s_frame_bytes = cfg->frame_bytes;
     s_channels = channels;
     s_audio_cfg_valid = true;
@@ -750,7 +755,8 @@ static void on_evt_audio(uint32_t msg_id, const uint8_t *data, size_t len, void 
 {
     (void)msg_id;
     (void)ctx;
-    if (!data || len < sizeof(espnow_evt_audio_raw_t) || !s_audio_cfg_valid) {
+    if (!data || len < sizeof(espnow_evt_audio_raw_t) ||
+        !s_audio_cfg_valid || !s_audio_rx_active) {
         return;
     }
 
@@ -804,13 +810,26 @@ static void on_evt_audio_key(uint32_t msg_id, const uint8_t *data, size_t len, v
     }
 
     const espnow_evt_audio_key_t *key = (const espnow_evt_audio_key_t *)data;
+    uint8_t channels = key->channels ? key->channels : ESPNOW_CHANNELS;
+    if (key->frame_bytes != FRAME_PAYLOAD_BYTES ||
+        channels != ESPNOW_CHANNELS ||
+        key->lc3_dt_us != LC3_DT_US ||
+        key->sample_rate_hz != AUDIO_RATE_HZ) {
+        ESP_LOGE(TAG, "Rejected ESP-NOW audio key config frame=%u ch=%u dt=%u rate=%u",
+                 key->frame_bytes, channels, key->lc3_dt_us, key->sample_rate_hz);
+        s_audio_cfg_valid = false;
+        stop_audio_rx();
+        return;
+    }
+
     memcpy(s_audio_key, key->audio_key, ESPNOW_AUDIO_KEY_LEN);
     s_frame_bytes = key->frame_bytes;
-    s_channels = key->channels ? key->channels : ESPNOW_CHANNELS;
+    s_channels = channels;
+    s_audio_copy_count = ESPNOW_AUDIO_COPY_DEFAULT;
     s_audio_cfg_valid = true;
 
-    ESP_LOGI(TAG, "Received ESP-NOW audio key: frame=%u ch_count=%u dt=%u",
-             s_frame_bytes, s_channels, LC3_DT_US);
+    ESP_LOGI(TAG, "Received ESP-NOW audio key: frame=%u ch=%u dt=%u rate=%u",
+             s_frame_bytes, s_channels, key->lc3_dt_us, key->sample_rate_hz);
 
     stop_audio_rx();
     start_audio_rx();
