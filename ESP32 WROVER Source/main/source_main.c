@@ -31,6 +31,7 @@
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_now.h"
 #include "esp_random.h"
@@ -46,6 +47,8 @@
 #include "mbedtls/cmac.h"
 #include "mbedtls/sha256.h"
 #include "nvs_flash.h"
+
+extern int esp_clk_cpu_freq(void);
 
 /* ── Protocol constants (must match C6 bridge + sink) ──────────────── */
 #define ESPNOW_CHANNEL       1
@@ -65,15 +68,27 @@
 #define AUDIO_BITS_PER_SAMPLE 24
 #define LC3_BYTES_PER_CH     72
 #define LC3_FRAME_BYTES      (LC3_BYTES_PER_CH * AUDIO_CHANNELS)
-#define AUDIO_FRAME_SAMPLES  ((AUDIO_RATE_HZ * LC3_DT_US) / 1000000)  /* 360 */
+#define AUDIO_FRAME_SAMPLES  360
+#define LC3_BITRATE_KBPS     154
 #define MAX_FRAME_BYTES      400
 #define ESPNOW_AUDIO_MAX_PAYLOAD LC3_FRAME_BYTES
+
+_Static_assert((AUDIO_FRAME_SAMPLES * 1000000) == (AUDIO_RATE_HZ * LC3_DT_US),
+               "PCM frame samples must match sample rate and LC3 frame time");
 
 /* ── Auracast-style redundancy ─────────────────────────────────────── */
 #define RTN                  4          /* copies per audio frame */
 #define SUB_INTERVAL_US      1875       /* 7.5 ms / 4 copies */
 #define TX_RING_FRAMES       16
 #define ESPNOW_MAX_IN_FLIGHT 6
+#define PACE_SPIN_US         250
+#define PACE_ONE_TICK_US     1000
+#define PACE_DELAY_GUARD_US  (PACE_ONE_TICK_US + PACE_SPIN_US)
+#define ENC_TIMING_WINDOW_LOG2 8
+#define ENC_TIMING_WINDOW    (1u << ENC_TIMING_WINDOW_LOG2)
+
+_Static_assert((TX_RING_FRAMES & (TX_RING_FRAMES - 1)) == 0,
+               "TX ring size must remain a power of two");
 
 /* ── PCM1808 I2S pin config ────────────────────────────────────────── */
 #define PIN_I2S_LRCK         GPIO_NUM_18
@@ -339,21 +354,19 @@ static void espnow_send_cb(const wifi_tx_info_t *info, esp_now_send_status_t sta
  * then busy-wait only the final short residual.
  * This keeps IDLE tasks fed while hitting sub-ms precision. */
 static inline void wait_until_us(int64_t target_us) {
-    int64_t remain = target_us - esp_timer_get_time();
-    if (remain > 250) {
-        uint32_t safe_us = (uint32_t)(remain - 250);
-        TickType_t ticks = (TickType_t)(safe_us / (1000000 / configTICK_RATE_HZ));
-        if (ticks > 0) vTaskDelay(ticks);
+    int64_t remain;
+    while ((remain = target_us - esp_timer_get_time()) > PACE_DELAY_GUARD_US) {
+        vTaskDelay(1);
     }
     while (esp_timer_get_time() < target_us) {
-        /* spin — guaranteed <= ~250 us */
+        /* Spin only near the deadline to preserve sub-ms packet spacing. */
     }
 }
 
 static void publish_tx_frame(uint32_t seq, uint32_t capture_us, const uint8_t *payload)
 {
     uint32_t crc = crc32_audio(payload, s_frame_bytes);
-    tx_frame_t *f = &s_tx_ring[seq % TX_RING_FRAMES];
+    tx_frame_t *f = &s_tx_ring[seq & (TX_RING_FRAMES - 1)];
 
     portENTER_CRITICAL(&s_tx_ring_lock);
     f->valid = false;
@@ -371,7 +384,7 @@ static bool copy_tx_frame(uint32_t seq, tx_frame_t *out)
 {
     bool ok = false;
     portENTER_CRITICAL(&s_tx_ring_lock);
-    const tx_frame_t *f = &s_tx_ring[seq % TX_RING_FRAMES];
+    const tx_frame_t *f = &s_tx_ring[seq & (TX_RING_FRAMES - 1)];
     if (f->valid && f->seq == seq) {
         *out = *f;
         ok = true;
@@ -537,7 +550,7 @@ static void beacon_task(void *arg) {
     memcpy(b.source_mac, s_source_mac, 6);
     b.lc3_dt_us      = LC3_DT_US;
     b.sample_rate_hz = AUDIO_RATE_HZ;
-    b.bitrate_kbps   = (s_frame_bytes * 8 * 1000000) / (LC3_DT_US * 1000);
+    b.bitrate_kbps   = LC3_BITRATE_KBPS;
     b.frame_bytes    = (uint8_t)s_frame_bytes;
     b.flags          = 0x01;  /* stereo */
     b.stream_id      = s_stream_id;
@@ -665,18 +678,27 @@ static void pcm1808_reader_task(void *arg) {
 static void audio_encode_task(void *arg) {
     (void)arg;
 
-    lc3_encoder_t enc_l = lc3_setup_encoder(LC3_DT_US, AUDIO_RATE_HZ, 0,
-            calloc(1, lc3_encoder_size(LC3_DT_US, AUDIO_RATE_HZ)));
-    lc3_encoder_t enc_r = lc3_setup_encoder(LC3_DT_US, AUDIO_RATE_HZ, 0,
-            calloc(1, lc3_encoder_size(LC3_DT_US, AUDIO_RATE_HZ)));
-    if (!enc_l || !enc_r) {
-        ESP_LOGE(TAG, "LC3 encoder init failed");
+    const unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    size_t enc_size = lc3_encoder_size(LC3_DT_US, AUDIO_RATE_HZ);
+    void *enc_l_mem = heap_caps_calloc(1, enc_size, caps);
+    void *enc_r_mem = heap_caps_calloc(1, enc_size, caps);
+    uint8_t *lc3_buf = heap_caps_calloc(1, s_frame_bytes, caps);
+    uint8_t *encrypted = heap_caps_calloc(1, s_frame_bytes, caps);
+    if (!enc_l_mem || !enc_r_mem || !lc3_buf || !encrypted) {
+        ESP_LOGE(TAG, "LC3 hot buffer allocation failed internal_free=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
         vTaskDelete(NULL);
         return;
     }
 
-    uint8_t *lc3_buf = calloc(1, s_frame_bytes);
-    if (!lc3_buf) { vTaskDelete(NULL); return; }
+    lc3_encoder_t enc_l = lc3_setup_encoder(LC3_DT_US, AUDIO_RATE_HZ, 0, enc_l_mem);
+    lc3_encoder_t enc_r = lc3_setup_encoder(LC3_DT_US, AUDIO_RATE_HZ, 0, enc_r_mem);
+    if (!enc_l || !enc_r) {
+        ESP_LOGE(TAG, "LC3 encoder init failed internal_free=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        vTaskDelete(NULL);
+        return;
+    }
 
     static pcm_block_t last_pcm;
     memset(&last_pcm, 0, sizeof(last_pcm));
@@ -701,8 +723,13 @@ static void audio_encode_task(void *arg) {
 
     uint32_t seq = 0;
     uint32_t frame_count = 0;
+    uint32_t last_frame_count = 0;
+    uint32_t last_tx_queued = s_tx_queued;
     int64_t frame_due_us = esp_timer_get_time();
     int64_t next_stats = esp_timer_get_time() + 5000000;
+    uint32_t timing_count = 0;
+    int64_t enc_l_sum = 0, enc_r_sum = 0, aes_sum = 0, pub_sum = 0, total_sum = 0;
+    int64_t enc_l_max = 0, enc_r_max = 0, aes_max = 0, pub_max = 0, total_max = 0;
 
     while (1) {
         wait_until_us(frame_due_us);
@@ -721,13 +748,16 @@ static void audio_encode_task(void *arg) {
             s_pcm_underruns++;
         }
 
-        /* LC3 encode both channels sequentially */
+        /* LC3 encode both channels sequentially on core 1. */
+        int64_t t0 = esp_timer_get_time();
         int rl = lc3_encode(enc_l, LC3_PCM_FORMAT_S24,
                             last_pcm.pcm, AUDIO_CHANNELS,
                             s_per_ch, lc3_buf);
+        int64_t t1 = esp_timer_get_time();
         int rr = lc3_encode(enc_r, LC3_PCM_FORMAT_S24,
                             last_pcm.pcm + 1, AUDIO_CHANNELS,
                             s_per_ch, lc3_buf + s_per_ch);
+        int64_t t2 = esp_timer_get_time();
         if (rl != 0 || rr != 0) {
             ESP_LOGW(TAG, "LC3 enc fail L=%d R=%d", rl, rr);
             frame_due_us += LC3_DT_US;
@@ -735,15 +765,47 @@ static void audio_encode_task(void *arg) {
         }
 
         uint8_t nonce[16];
-        uint8_t encrypted[LC3_FRAME_BYTES];
         make_audio_nonce(s_stream_id, seq, nonce);
         if (aes_ctr_crypt(s_audio_key, nonce, lc3_buf, encrypted, s_frame_bytes) != ESP_OK) {
             ESP_LOGW(TAG, "Audio AES encrypt failed");
             frame_due_us += LC3_DT_US;
             continue;
         }
+        int64_t t3 = esp_timer_get_time();
 
         publish_tx_frame(seq, (uint32_t)frame_start_us, encrypted);
+        int64_t t4 = esp_timer_get_time();
+
+        int64_t enc_l_us = t1 - t0;
+        int64_t enc_r_us = t2 - t1;
+        int64_t aes_us = t3 - t2;
+        int64_t pub_us = t4 - t3;
+        int64_t total_us = t4 - t0;
+        enc_l_sum += enc_l_us;
+        enc_r_sum += enc_r_us;
+        aes_sum += aes_us;
+        pub_sum += pub_us;
+        total_sum += total_us;
+        if (enc_l_us > enc_l_max) enc_l_max = enc_l_us;
+        if (enc_r_us > enc_r_max) enc_r_max = enc_r_us;
+        if (aes_us > aes_max) aes_max = aes_us;
+        if (pub_us > pub_max) pub_max = pub_us;
+        if (total_us > total_max) total_max = total_us;
+        timing_count++;
+        if (timing_count == ENC_TIMING_WINDOW) {
+            ESP_LOGI(TAG,
+                     "ENC timing avg/max us: L=%" PRId64 "/%" PRId64
+                     " R=%" PRId64 "/%" PRId64 " AES=%" PRId64 "/%" PRId64
+                     " PUB=%" PRId64 "/%" PRId64 " TOTAL=%" PRId64 "/%" PRId64,
+                     enc_l_sum >> ENC_TIMING_WINDOW_LOG2, enc_l_max,
+                     enc_r_sum >> ENC_TIMING_WINDOW_LOG2, enc_r_max,
+                     aes_sum >> ENC_TIMING_WINDOW_LOG2, aes_max,
+                     pub_sum >> ENC_TIMING_WINDOW_LOG2, pub_max,
+                     total_sum >> ENC_TIMING_WINDOW_LOG2, total_max);
+            timing_count = 0;
+            enc_l_sum = enc_r_sum = aes_sum = pub_sum = total_sum = 0;
+            enc_l_max = enc_r_max = aes_max = pub_max = total_max = 0;
+        }
 
         frame_count++;
         seq++;
@@ -757,14 +819,21 @@ static void audio_encode_task(void *arg) {
 
         /* Stats every 5 seconds */
         if (now >= next_stats) {
+            uint32_t frame_delta = frame_count - last_frame_count;
+            uint32_t tx_delta = s_tx_queued - last_tx_queued;
+            uint32_t enc_fps_x10 = frame_delta << 1;
+            uint32_t tx_pkt_s_x10 = tx_delta << 1;
             ESP_LOGI(TAG, "TX: frames=%" PRIu32 " queued=%" PRIu32 " qfail=%" PRIu32
                      " cb_ok=%" PRIu32 " cb_fail=%" PRIu32 " token_drop=%" PRIu32
                      " late_enc=%" PRIu32 " late_tx=%" PRIu32 " underrun=%" PRIu32
-                     " pcm_q=%u",
+                     " pcm_q=%u enc_fps_x10=%" PRIu32 " tx_pkt_s_x10=%" PRIu32,
                      frame_count, s_tx_queued, s_tx_queue_fail, s_tx_cb_ok,
                      s_tx_cb_fail, s_tx_token_drop, s_late_encode_frames,
                      s_late_tx_ticks, s_pcm_underruns,
-                     (unsigned)uxQueueMessagesWaiting(s_pcm_full_q));
+                     (unsigned)uxQueueMessagesWaiting(s_pcm_full_q),
+                     enc_fps_x10, tx_pkt_s_x10);
+            last_frame_count = frame_count;
+            last_tx_queued = s_tx_queued;
             next_stats = now + 5000000;
         }
     }
@@ -849,6 +918,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
 
+    ESP_LOGI(TAG, "CPU clock: %" PRIu32 " Hz config=%u MHz",
+             (uint32_t)esp_clk_cpu_freq(), (unsigned)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
     ESP_LOGI(TAG, "Room %s on Wi-Fi ch %d", CONFIG_ROOM_AUDIO_ROOM_ID, ESPNOW_CHANNEL);
     ESP_LOGI(TAG, "Stereo LC3: %d Hz, %d us, %d-bit, %d+%d=%d B/frame, "
              "RTN=%d sub=%dus stream=%" PRIu32 " phy=%s tick_hz=%u",
@@ -864,7 +935,7 @@ void app_main(void) {
     xTaskCreatePinnedToCore(handshake_task, "room_auth",   6144, NULL, 5,  NULL, 0);
     xTaskCreatePinnedToCore(pcm1808_reader_task, "pcm1808_rx", 8192, NULL, 18, NULL, 0);
 
-    /* Core 1 tasks — encode cadence and one-packet TX cadence */
+    /* Core 1 tasks — TX keeps packet cadence while encode timing is measured. */
     xTaskCreatePinnedToCore(audio_tx_task,     "espnow_tx",  6144,  NULL, 23, NULL, 1);
     xTaskCreatePinnedToCore(audio_encode_task, "lc3_enc",    16384, NULL, 22, NULL, 1);
 }
