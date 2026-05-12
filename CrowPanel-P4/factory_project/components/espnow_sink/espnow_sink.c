@@ -39,22 +39,37 @@ static const char *TAG = "assist_sink";
 #define AUDIO_FRAME_SAMPLES  360
 #define CODEC_FRAME_BYTES    ESPNOW_LC3_BYTES_PER_CH
 #define FRAME_PAYLOAD_BYTES  ESPNOW_LC3_FRAME_BYTES
-#define AUDIO_RAW_QUEUE_LEN  64
 #define SOURCE_TIMEOUT_MS    10000
 #define ROOM_SCAN_STALE_MS   4000
 
 #define JB_SIZE              32
 #define JB_MASK              (JB_SIZE - 1)
-#define JB_PREFILL           3
+#define JB_PREFILL_MIN       4
+#define JB_PREFILL_MAX       12
 #define AUX_DMA_FRAME_SAMPLES 120
 #define AUX_VOLUME_BOOST_PCT 100
 
 typedef struct {
-    int32_t pcm_l[JB_SIZE][AUDIO_FRAME_SAMPLES];
-    int32_t pcm_r[JB_SIZE][AUDIO_FRAME_SAMPLES];
-    uint32_t write_idx;
-    uint32_t read_idx;
-    int      started;
+    bool     valid;
+    uint32_t stream_id;
+    uint32_t seq;
+    uint32_t capture_us;
+    uint32_t payload_crc32;
+    uint8_t  copy_idx;
+    uint8_t  copy_count;
+    uint8_t  frame_bytes;
+    uint8_t  channels;
+    uint8_t  payload[FRAME_PAYLOAD_BYTES];
+} jitter_slot_t;
+
+typedef struct {
+    jitter_slot_t slots[JB_SIZE];
+    uint32_t play_seq;
+    uint32_t highest_seq;
+    bool     have_play_seq;
+    bool     have_highest_seq;
+    bool     started;
+    uint8_t  prebuffer_target;
     SemaphoreHandle_t mutex;
 } jitter_buffer_t;
 
@@ -83,13 +98,18 @@ static uint8_t s_audio_copy_count;
 static volatile bool s_audio_cfg_valid;
 static volatile int s_output_volume = 100;
 
-static QueueHandle_t s_audio_raw_q;
-static TaskHandle_t s_audio_decode_task;
 static volatile bool s_audio_rx_active;
 static uint32_t s_audio_stream_id;
 
 static volatile uint32_t s_packets_rx;
 static volatile uint32_t s_packets_lost;
+static volatile uint32_t s_duplicate_drops;
+static volatile uint32_t s_late_drops;
+static volatile uint32_t s_wrong_stream_drops;
+static volatile uint32_t s_crc_failures;
+static volatile uint32_t s_plc_frames;
+static volatile uint32_t s_jitter_overflow;
+static volatile uint32_t s_copy_hist[ESPNOW_AUDIO_COPY_DEFAULT];
 static volatile uint32_t s_last_audio_ms;
 static volatile uint32_t s_last_room_found_ms;
 
@@ -204,6 +224,19 @@ static void make_audio_nonce(uint32_t stream_id, uint32_t seq, uint8_t nonce[16]
     nonce[11] = (uint8_t)(seq >> 24);
 }
 
+static uint32_t crc32_audio(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; ++bit) {
+            uint32_t mask = 0u - (crc & 1u);
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return ~crc;
+}
+
 static esp_err_t send_cmd(uint32_t msg_id, const void *payload, size_t len)
 {
     esp_err_t ret = esp_hosted_send_custom_data(msg_id, (const uint8_t *)payload, len);
@@ -263,48 +296,120 @@ static void init_direct_i2s(void)
 static void jb_init(jitter_buffer_t *jb)
 {
     memset(jb, 0, sizeof(*jb));
+    jb->prebuffer_target = JB_PREFILL_MIN;
     jb->mutex = xSemaphoreCreateMutex();
 }
 
-static int jb_level(jitter_buffer_t *jb)
+static bool jb_insert_packet(jitter_buffer_t *jb, const espnow_evt_audio_raw_t *pkt)
 {
-    return (int)(jb->write_idx - jb->read_idx);
+    bool inserted = false;
+    xSemaphoreTake(jb->mutex, portMAX_DELAY);
+    if (!jb->have_play_seq) {
+        jb->play_seq = pkt->seq;
+        jb->have_play_seq = true;
+    }
+
+    if ((int32_t)(pkt->seq - jb->play_seq) < 0) {
+        s_late_drops++;
+        goto out;
+    }
+    if ((uint32_t)(pkt->seq - jb->play_seq) >= JB_SIZE) {
+        s_jitter_overflow++;
+        goto out;
+    }
+
+    jitter_slot_t *slot = &jb->slots[pkt->seq & JB_MASK];
+    if (slot->valid && slot->stream_id == pkt->stream_id && slot->seq == pkt->seq) {
+        s_duplicate_drops++;
+        goto out;
+    }
+
+    if (slot->valid) {
+        s_jitter_overflow++;
+        goto out;
+    }
+
+    slot->valid = true;
+    slot->stream_id = pkt->stream_id;
+    slot->seq = pkt->seq;
+    slot->capture_us = pkt->capture_us;
+    slot->payload_crc32 = pkt->payload_crc32;
+    slot->copy_idx = pkt->copy_idx;
+    slot->copy_count = pkt->copy_count;
+    slot->frame_bytes = pkt->frame_bytes;
+    slot->channels = pkt->channels;
+    memcpy(slot->payload, pkt->payload, FRAME_PAYLOAD_BYTES);
+
+    if (!jb->have_highest_seq || (int32_t)(pkt->seq - jb->highest_seq) > 0) {
+        jb->highest_seq = pkt->seq;
+        jb->have_highest_seq = true;
+    }
+    if (pkt->copy_idx < ESPNOW_AUDIO_COPY_DEFAULT) {
+        s_copy_hist[pkt->copy_idx]++;
+    }
+    inserted = true;
+
+out:
+    xSemaphoreGive(jb->mutex);
+    return inserted;
 }
 
-static void jb_push(jitter_buffer_t *jb, const int32_t *pcm_l, const int32_t *pcm_r)
+static bool jb_ready_to_play(jitter_buffer_t *jb)
 {
+    bool ready = false;
     xSemaphoreTake(jb->mutex, portMAX_DELAY);
-    if (jb_level(jb) >= JB_SIZE) {
-        jb->read_idx++;
+    if (jb->started) {
+        ready = true;
+    } else if (jb->have_play_seq && jb->have_highest_seq &&
+               (int32_t)(jb->highest_seq - jb->play_seq + 1) >= jb->prebuffer_target) {
+        jb->started = true;
+        ready = true;
     }
-    uint32_t idx = jb->write_idx & JB_MASK;
-    memcpy(jb->pcm_l[idx], pcm_l, AUDIO_FRAME_SAMPLES * sizeof(int32_t));
-    memcpy(jb->pcm_r[idx], pcm_r, AUDIO_FRAME_SAMPLES * sizeof(int32_t));
-    jb->write_idx++;
     xSemaphoreGive(jb->mutex);
+    return ready;
 }
 
-static int jb_pop(jitter_buffer_t *jb, int32_t *pcm_l, int32_t *pcm_r)
+static bool jb_take_play_packet(jitter_buffer_t *jb, espnow_evt_audio_raw_t *pkt)
 {
+    bool found = false;
     xSemaphoreTake(jb->mutex, portMAX_DELAY);
-    if (jb_level(jb) <= 0) {
-        xSemaphoreGive(jb->mutex);
-        return -1;
+    if (!jb->have_play_seq) {
+        goto out;
     }
-    uint32_t idx = jb->read_idx & JB_MASK;
-    memcpy(pcm_l, jb->pcm_l[idx], AUDIO_FRAME_SAMPLES * sizeof(int32_t));
-    memcpy(pcm_r, jb->pcm_r[idx], AUDIO_FRAME_SAMPLES * sizeof(int32_t));
-    jb->read_idx++;
+
+    jitter_slot_t *slot = &jb->slots[jb->play_seq & JB_MASK];
+    if (slot->valid && slot->stream_id == s_audio_stream_id && slot->seq == jb->play_seq) {
+        pkt->stream_id = slot->stream_id;
+        pkt->seq = slot->seq;
+        pkt->capture_us = slot->capture_us;
+        pkt->payload_crc32 = slot->payload_crc32;
+        pkt->copy_idx = slot->copy_idx;
+        pkt->copy_count = slot->copy_count;
+        pkt->frame_bytes = slot->frame_bytes;
+        pkt->channels = slot->channels;
+        pkt->lc3_dt_us = LC3_DT_US;
+        pkt->sample_rate_hz = AUDIO_RATE_HZ;
+        memcpy(pkt->payload, slot->payload, FRAME_PAYLOAD_BYTES);
+        slot->valid = false;
+        found = true;
+    }
+    jb->play_seq++;
+
+out:
     xSemaphoreGive(jb->mutex);
-    return 0;
+    return found;
 }
 
 static void jb_reset(jitter_buffer_t *jb)
 {
     xSemaphoreTake(jb->mutex, portMAX_DELAY);
-    jb->write_idx = 0;
-    jb->read_idx = 0;
-    jb->started = 0;
+    memset(jb->slots, 0, sizeof(jb->slots));
+    jb->play_seq = 0;
+    jb->highest_seq = 0;
+    jb->have_play_seq = false;
+    jb->have_highest_seq = false;
+    jb->started = false;
+    jb->prebuffer_target = JB_PREFILL_MIN;
     xSemaphoreGive(jb->mutex);
 }
 
@@ -316,16 +421,64 @@ static void playback_task_fn(void *arg)
     static int32_t pcm_l[AUDIO_FRAME_SAMPLES];
     static int32_t pcm_r[AUDIO_FRAME_SAMPLES];
     static int32_t i2s_buf[AUDIO_FRAME_SAMPLES * 2];
+    static uint8_t decrypted[MAX_FRAME_BYTES];
+    espnow_evt_audio_raw_t pkt;
 
-    ESP_LOGI(TAG, "Playback (core %d): prefill=%d", xPortGetCoreID(), JB_PREFILL);
-    while (jb_level(&s_jb) < JB_PREFILL) {
-        vTaskDelay(pdMS_TO_TICKS(2));
+    unsigned dec_sz = lc3_decoder_size(LC3_DT_US, AUDIO_RATE_HZ);
+    void *dec_l_mem = heap_caps_aligned_alloc(8, dec_sz, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    void *dec_r_mem = heap_caps_aligned_alloc(8, dec_sz, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    lc3_decoder_t dec_l = lc3_setup_decoder(LC3_DT_US, AUDIO_RATE_HZ, 0, dec_l_mem);
+    lc3_decoder_t dec_r = lc3_setup_decoder(LC3_DT_US, AUDIO_RATE_HZ, 0, dec_r_mem);
+    uint32_t next_stats_ms = now_ms() + 5000;
+    uint32_t last_plc_frames = 0;
+    uint32_t last_late_drops = 0;
+    uint8_t clean_windows = 0;
+    if (!dec_l || !dec_r) {
+        ESP_LOGE(TAG, "LC3 decoder setup failed");
+        vTaskDelete(NULL);
+        return;
     }
-    s_jb.started = 1;
-    ESP_LOGI(TAG, "Playback started!");
+
+    ESP_LOGI(TAG, "Playback (core %d): sequence jitter ring prefill=%d",
+             xPortGetCoreID(), JB_PREFILL_MIN);
 
     while (1) {
-        if (jb_pop(&s_jb, pcm_l, pcm_r) != 0) {
+        bool have_audio = false;
+        bool use_plc = false;
+
+        if (s_audio_rx_active && s_audio_cfg_valid && jb_ready_to_play(&s_jb)) {
+            if (jb_take_play_packet(&s_jb, &pkt)) {
+                uint8_t nonce[16];
+                make_audio_nonce(pkt.stream_id, pkt.seq, nonce);
+                if (aes_ctr_crypt(s_audio_key, nonce, pkt.payload,
+                                  decrypted, FRAME_PAYLOAD_BYTES) == ESP_OK) {
+                    int ret_l = lc3_decode(dec_l, decrypted, CODEC_FRAME_BYTES,
+                                           LC3_PCM_FORMAT_S24, pcm_l, 1);
+                    int ret_r = lc3_decode(dec_r, decrypted + CODEC_FRAME_BYTES,
+                                           CODEC_FRAME_BYTES, LC3_PCM_FORMAT_S24, pcm_r, 1);
+                    if (ret_l >= 0 && ret_r >= 0) {
+                        have_audio = true;
+                        s_packets_rx++;
+                    } else {
+                        use_plc = true;
+                    }
+                } else {
+                    use_plc = true;
+                }
+            } else {
+                use_plc = true;
+            }
+        }
+
+        if (use_plc) {
+            (void)lc3_decode(dec_l, NULL, 0, LC3_PCM_FORMAT_S24, pcm_l, 1);
+            (void)lc3_decode(dec_r, NULL, 0, LC3_PCM_FORMAT_S24, pcm_r, 1);
+            s_packets_lost++;
+            s_plc_frames++;
+            have_audio = true;
+        }
+
+        if (!have_audio) {
             memset(pcm_l, 0, sizeof(pcm_l));
             memset(pcm_r, 0, sizeof(pcm_r));
         }
@@ -347,99 +500,52 @@ static void playback_task_fn(void *arg)
         i2s_channel_write(s_i2s_tx, i2s_buf,
                           AUDIO_FRAME_SAMPLES * sizeof(int32_t) * 2,
                           &written, portMAX_DELAY);
+
+        uint32_t now = now_ms();
+        if (now >= next_stats_ms) {
+            uint32_t play_seq = 0;
+            uint8_t prebuffer = 0;
+            int level = 0;
+            uint32_t plc_delta = s_plc_frames - last_plc_frames;
+            uint32_t late_delta = s_late_drops - last_late_drops;
+            xSemaphoreTake(s_jb.mutex, portMAX_DELAY);
+            if ((plc_delta + late_delta) > 3 && s_jb.prebuffer_target < JB_PREFILL_MAX) {
+                s_jb.prebuffer_target++;
+                s_jb.started = false;
+                clean_windows = 0;
+            } else if ((plc_delta + late_delta) == 0) {
+                if (++clean_windows >= 8 && s_jb.prebuffer_target > JB_PREFILL_MIN) {
+                    s_jb.prebuffer_target--;
+                    clean_windows = 0;
+                }
+            } else {
+                clean_windows = 0;
+            }
+            play_seq = s_jb.play_seq;
+            prebuffer = s_jb.prebuffer_target;
+            if (s_jb.have_play_seq && s_jb.have_highest_seq &&
+                (int32_t)(s_jb.highest_seq - s_jb.play_seq) >= 0) {
+                level = (int)(s_jb.highest_seq - s_jb.play_seq + 1);
+                if (level > JB_SIZE) {
+                    level = JB_SIZE;
+                }
+            }
+            xSemaphoreGive(s_jb.mutex);
+            ESP_LOGI(TAG,
+                     "RX: valid=%" PRIu32 " dup=%" PRIu32 " late=%" PRIu32
+                     " wrong_stream=%" PRIu32 " crc=%" PRIu32 " plc=%" PRIu32
+                     " overflow=%" PRIu32 " copy=[%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "]"
+                     " prebuffer=%u level=%d play_seq=%" PRIu32 " stream=%" PRIu32,
+                     s_packets_rx, s_duplicate_drops, s_late_drops,
+                     s_wrong_stream_drops, s_crc_failures, s_plc_frames,
+                     s_jitter_overflow, s_copy_hist[0], s_copy_hist[1],
+                     s_copy_hist[2], s_copy_hist[3], prebuffer, level,
+                     play_seq, s_audio_stream_id);
+            last_plc_frames = s_plc_frames;
+            last_late_drops = s_late_drops;
+            next_stats_ms = now + 5000;
+        }
     }
-}
-
-/* ───── ESP-NOW audio decode task: decrypt → dedupe/gap-fill → LC3 decode → PCM queue ───── */
-
-static void audio_decode_task_fn(void *arg)
-{
-    (void)arg;
-    ESP_LOGI(TAG, "ESP-NOW audio decode task started (core %d)", xPortGetCoreID());
-
-    while (!s_audio_cfg_valid) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-
-    unsigned enc_sz = lc3_encoder_size(LC3_DT_US, AUDIO_RATE_HZ);
-    unsigned dec_sz = lc3_decoder_size(LC3_DT_US, AUDIO_RATE_HZ);
-    (void)enc_sz;
-
-    void *dec_l_mem = heap_caps_aligned_alloc(8, dec_sz, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-    void *dec_r_mem = heap_caps_aligned_alloc(8, dec_sz, MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-    lc3_decoder_t dec_l = lc3_setup_decoder(LC3_DT_US, AUDIO_RATE_HZ, 0, dec_l_mem);
-    lc3_decoder_t dec_r = lc3_setup_decoder(LC3_DT_US, AUDIO_RATE_HZ, 0, dec_r_mem);
-
-    int32_t *pcm_l = calloc(AUDIO_FRAME_SAMPLES, sizeof(int32_t));
-    int32_t *pcm_r = calloc(AUDIO_FRAME_SAMPLES, sizeof(int32_t));
-    uint8_t  decrypted[MAX_FRAME_BYTES];
-
-    if (!dec_l || !dec_r || !pcm_l || !pcm_r) {
-        ESP_LOGE(TAG, "LC3 decoder setup failed");
-        free(dec_l_mem); free(dec_r_mem); free(pcm_l); free(pcm_r);
-        vTaskDelete(NULL);
-        return;
-    }
-    ESP_LOGI(TAG, "LC3 decoder: dt=%uus samples=%d frame=%u (dec_mem=%u)",
-             LC3_DT_US, AUDIO_FRAME_SAMPLES, FRAME_PAYLOAD_BYTES, dec_sz);
-
-    espnow_evt_audio_raw_t pkt;
-    uint32_t expected_seq = 0;
-    bool have_expected = false;
-
-    while (s_audio_rx_active) {
-        if (xQueueReceive(s_audio_raw_q, &pkt, pdMS_TO_TICKS(50)) != pdTRUE) continue;
-        s_last_audio_ms = now_ms();
-
-        if (pkt.stream_id != s_audio_stream_id ||
-            pkt.frame_bytes != FRAME_PAYLOAD_BYTES ||
-            pkt.channels != ESPNOW_CHANNELS ||
-            pkt.lc3_dt_us != LC3_DT_US ||
-            pkt.sample_rate_hz != AUDIO_RATE_HZ) {
-            continue;
-        }
-
-        if (!have_expected) {
-            expected_seq = pkt.seq;
-            have_expected = true;
-        }
-
-        if ((int32_t)(pkt.seq - expected_seq) < 0) {
-            s_packets_lost++;
-            continue;
-        }
-
-        while (expected_seq != pkt.seq) {
-            (void)lc3_decode(dec_l, NULL, 0, LC3_PCM_FORMAT_S24, pcm_l, 1);
-            (void)lc3_decode(dec_r, NULL, 0, LC3_PCM_FORMAT_S24, pcm_r, 1);
-            jb_push(&s_jb, pcm_l, pcm_r);
-            s_packets_lost++;
-            expected_seq++;
-        }
-
-        uint8_t nonce[16];
-        make_audio_nonce(pkt.stream_id, pkt.seq, nonce);
-        if (aes_ctr_crypt(s_audio_key, nonce, pkt.payload, decrypted, FRAME_PAYLOAD_BYTES) != ESP_OK) {
-            s_packets_lost++;
-            continue;
-        }
-
-        int ret_l = lc3_decode(dec_l, decrypted, CODEC_FRAME_BYTES, LC3_PCM_FORMAT_S24, pcm_l, 1);
-        int ret_r = lc3_decode(dec_r, decrypted + CODEC_FRAME_BYTES, CODEC_FRAME_BYTES, LC3_PCM_FORMAT_S24, pcm_r, 1);
-
-        if (ret_l < 0 || ret_r < 0) {
-            s_packets_lost++;
-            continue;
-        }
-
-        jb_push(&s_jb, pcm_l, pcm_r);
-        s_packets_rx++;
-        expected_seq++;
-    }
-
-    free(pcm_l); free(pcm_r); free(dec_l_mem); free(dec_r_mem);
-    s_audio_decode_task = NULL;
-    vTaskDelete(NULL);
 }
 
 static int find_or_create_room(const espnow_evt_room_t *r)
@@ -534,12 +640,17 @@ static void on_evt_joined(uint32_t msg_id, const uint8_t *data, size_t len, void
              joined->room_code, joined->stream_id);
     s_packets_rx = 0;
     s_packets_lost = 0;
+    s_duplicate_drops = 0;
+    s_late_drops = 0;
+    s_wrong_stream_drops = 0;
+    s_crc_failures = 0;
+    s_plc_frames = 0;
+    s_jitter_overflow = 0;
+    memset((void *)s_copy_hist, 0, sizeof(s_copy_hist));
     s_last_audio_ms = now_ms();
     s_audio_cfg_valid = false;
     s_audio_stream_id = joined->stream_id;
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
+    jb_reset(&s_jb);
     notify_state(ESPNOW_STATE_CONNECTED);
 }
 
@@ -554,9 +665,6 @@ static void on_evt_left(uint32_t msg_id, const uint8_t *data, size_t len, void *
     s_selected_room = -1;
     s_audio_cfg_valid = false;
     jb_reset(&s_jb);
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
     notify_state(ESPNOW_STATE_IDLE);
 }
 
@@ -633,9 +741,7 @@ static void on_evt_audio_config(uint32_t msg_id, const uint8_t *data, size_t len
     s_frame_bytes = cfg->frame_bytes;
     s_channels = channels;
     s_audio_cfg_valid = true;
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
+    jb_reset(&s_jb);
     ESP_LOGI(TAG, "ESP-NOW audio config from C6: frame=%u channels=%u copies=%u",
              cfg->frame_bytes, channels, s_audio_copy_count);
 }
@@ -644,23 +750,31 @@ static void on_evt_audio(uint32_t msg_id, const uint8_t *data, size_t len, void 
 {
     (void)msg_id;
     (void)ctx;
-    if (!data || len < sizeof(espnow_evt_audio_raw_t) || !s_audio_cfg_valid || !s_audio_raw_q) {
+    if (!data || len < sizeof(espnow_evt_audio_raw_t) || !s_audio_cfg_valid) {
         return;
     }
 
     const espnow_evt_audio_raw_t *pkt = (const espnow_evt_audio_raw_t *)data;
+    if (pkt->stream_id != s_audio_stream_id) {
+        s_wrong_stream_drops++;
+        return;
+    }
     if (pkt->frame_bytes != FRAME_PAYLOAD_BYTES ||
         pkt->channels != ESPNOW_CHANNELS ||
         pkt->copy_count != ESPNOW_AUDIO_COPY_DEFAULT ||
-        pkt->copy_idx >= pkt->copy_count) {
+        pkt->copy_idx >= ESPNOW_AUDIO_COPY_DEFAULT ||
+        pkt->lc3_dt_us != LC3_DT_US ||
+        pkt->sample_rate_hz != AUDIO_RATE_HZ) {
         return;
     }
 
-    if (xQueueSend(s_audio_raw_q, pkt, 0) != pdTRUE) {
-        espnow_evt_audio_raw_t drop;
-        (void)xQueueReceive(s_audio_raw_q, &drop, 0);
-        (void)xQueueSend(s_audio_raw_q, pkt, 0);
-        s_packets_lost++;
+    if (crc32_audio(pkt->payload, FRAME_PAYLOAD_BYTES) != pkt->payload_crc32) {
+        s_crc_failures++;
+        return;
+    }
+
+    if (jb_insert_packet(&s_jb, pkt)) {
+        s_last_audio_ms = now_ms();
     }
 }
 
@@ -668,39 +782,16 @@ static void on_evt_audio(uint32_t msg_id, const uint8_t *data, size_t len, void 
 
 static void start_audio_rx(void)
 {
-    if (s_audio_decode_task) return;
-
-    if (!s_audio_raw_q) {
-        s_audio_raw_q = xQueueCreate(AUDIO_RAW_QUEUE_LEN, sizeof(espnow_evt_audio_raw_t));
-    } else {
-        xQueueReset(s_audio_raw_q);
-    }
-
+    jb_reset(&s_jb);
     s_audio_rx_active = true;
-    xTaskCreatePinnedToCore(audio_decode_task_fn, "espnow_dec", 20480, NULL, 23,
-                            &s_audio_decode_task, 1);
-    ESP_LOGI(TAG, "ESP-NOW audio RX started: frame=%u ch=%u copies=%u",
-             s_frame_bytes, s_channels, s_audio_copy_count);
+    ESP_LOGI(TAG, "ESP-NOW audio RX started: frame=%u ch=%u copies=%u prebuffer=%u",
+             s_frame_bytes, s_channels, s_audio_copy_count, s_jb.prebuffer_target);
 }
 
 static void stop_audio_rx(void)
 {
     s_audio_rx_active = false;
-
-    for (int i = 0; i < 40 && s_audio_decode_task; i++) {
-        vTaskDelay(pdMS_TO_TICKS(25));
-    }
-    if (s_audio_decode_task) {
-        ESP_LOGW(TAG, "Force-deleting audio decode task");
-        vTaskDelete(s_audio_decode_task);
-        s_audio_decode_task = NULL;
-    }
-
     jb_reset(&s_jb);
-
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
 }
 
 static void on_evt_audio_key(uint32_t msg_id, const uint8_t *data, size_t len, void *ctx)
@@ -817,9 +908,6 @@ static void autoscan_task_fn(void *arg)
                          SOURCE_TIMEOUT_MS);
                 s_audio_cfg_valid = false;
                 jb_reset(&s_jb);
-                if (s_audio_raw_q) {
-                    xQueueReset(s_audio_raw_q);
-                }
                 notify_state(ESPNOW_STATE_IDLE);
             }
             reconnect_attempts = 0;
@@ -946,10 +1034,6 @@ void espnow_sink_deinit(void)
     }
 
     jb_reset(&s_jb);
-    if (s_audio_raw_q) {
-        vQueueDelete(s_audio_raw_q);
-        s_audio_raw_q = NULL;
-    }
     if (s_rooms_mutex) {
         vSemaphoreDelete(s_rooms_mutex);
         s_rooms_mutex = NULL;
@@ -979,9 +1063,7 @@ esp_err_t espnow_sink_disable(void)
     s_c6_wifi_ok = false;
     s_c6_espnow_ok = false;
     s_audio_cfg_valid = false;
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
+    jb_reset(&s_jb);
     return send_cmd(ESPNOW_MSG_CMD_DEINIT, NULL, 0);
 }
 
@@ -1024,9 +1106,6 @@ esp_err_t espnow_sink_start_scan(void)
         s_audio_cfg_valid = false;
         s_selected_room = -1;
         jb_reset(&s_jb);
-        if (s_audio_raw_q) {
-            xQueueReset(s_audio_raw_q);
-        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
@@ -1094,9 +1173,6 @@ esp_err_t espnow_sink_join_room(int room_index)
     s_audio_cfg_valid = false;
     s_last_audio_ms = now_ms();
     jb_reset(&s_jb);
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
     notify_state(ESPNOW_STATE_JOINING);
     ESP_LOGI(TAG, "Requesting verified join room=0x%08" PRIX32 " stream=%" PRIu32,
              cmd.room_code, cmd.stream_id);
@@ -1116,9 +1192,6 @@ bool espnow_sink_leave_room(void)
     s_autoscan_target_code = 0;
     s_audio_cfg_valid = false;
     jb_reset(&s_jb);
-    if (s_audio_raw_q) {
-        xQueueReset(s_audio_raw_q);
-    }
     notify_state(ESPNOW_STATE_IDLE);
 
     bool c6_alive = (now_ms() - s_last_evt_ms) < 5000;

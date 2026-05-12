@@ -30,9 +30,9 @@
 /* ─── Codec parameters ─────────────────────────────────────────────── */
 #define ECAST_SAMPLE_RATE_HZ       48000
 #define ECAST_CHANNELS             2
-#define ECAST_LC3_FRAME_US         5000
-#define ECAST_LC3_BYTES_PER_CH     48        /* 76.8 kbps per channel */
-#define ECAST_SAMPLES_PER_FRAME    240       /* 5 ms at 48 kHz */
+#define ECAST_LC3_FRAME_US         7500
+#define ECAST_LC3_BYTES_PER_CH     72        /* 76.8 kbps per channel */
+#define ECAST_SAMPLES_PER_FRAME    360       /* 7.5 ms at 48 kHz */
 #define ECAST_AUDIO_BYTES          (ECAST_LC3_BYTES_PER_CH * ECAST_CHANNELS)
 
 /* ─── Timing / redundancy ──────────────────────────────────────────── */
@@ -40,17 +40,17 @@
  * Spaced SUB_INTERVAL_US apart → redundancy window = (RTN-1)*SUB_INTERVAL_US.
  * Raise RTN for worse RF environments; airtime scales linearly.
  *
- * RTN=3 with 2 ms spacing gives two redundant copies while keeping the whole
- * burst inside one 5 ms LC3plus frame period. */
-#define ECAST_RTN                  3
-#define ECAST_SUB_INTERVAL_US      2000      /* 2 ms between copies */
+ * RTN=4 with 1.875 ms spacing gives three redundant copies across one
+ * 7.5 ms LC3 frame period. */
+#define ECAST_RTN                  4
+#define ECAST_SUB_INTERVAL_US      1875      /* 7.5 ms / 4 copies */
 
 /* Presentation delay: the sink plays every frame at
  *   local_time = source_capture_us + PRES_DELAY_US + clock_offset
  * All RTN copies of the frame must arrive before this deadline.
  * Must be ≥ (RTN-1)*SUB_INTERVAL_US + margin for RF + sink pipeline.
  *
- * At RTN=3 with 2 ms sub-interval the redundancy window is ~4 ms. 45 ms
+ * At RTN=4 with 1.875 ms sub-interval the redundancy window is ~5.625 ms. 45 ms
  * leaves RF burst margin while keeping the link in the BLE Audio latency range. */
 #define ECAST_PRES_DELAY_US        45000     /* 45 ms */
 
@@ -96,13 +96,13 @@ typedef struct __attribute__((packed)) {
     uint64_t broadcast_id;          /* full 64-bit room id */
     uint32_t stream_id_full;        /* full stream_id (anti-collision) */
     uint16_t pres_delay_us;         /* 0..65535 µs (ECAST_PRES_DELAY_US) */
-    uint16_t frame_us;              /* 5000 */
+    uint16_t frame_us;              /* 7500 */
     uint16_t sample_rate_hz;        /* 48000 */
     uint8_t  channels;              /* 2 */
-    uint8_t  lc3_bytes_per_ch;      /* 48 */
+    uint8_t  lc3_bytes_per_ch;      /* 72 */
     uint8_t  wifi_channel;          /* channel the source is on right now */
     uint8_t  rtn;                   /* RTN currently in use */
-    uint8_t  sub_interval_us_x100;  /* sub interval / 100 us (20 = 2 ms) */
+    uint8_t  sub_interval_us_x100;  /* sub interval / 100 us (19 ~= 1.875 ms) */
     uint8_t  is_encrypted;          /* 0 or 1 */
     uint8_t  enc_iv[8];             /* nonce prefix (random per stream boot) */
     uint8_t  key_diversifier[8];    /* GSKD-equivalent (random per stream boot) */
@@ -115,7 +115,7 @@ _Static_assert(sizeof(ecast_beacon_payload_t) == 64,
 /* Audio payload, PLAINTEXT form (pre-encryption) */
 typedef struct __attribute__((packed)) {
     uint8_t  flags;                               /* reserved, must be 0 */
-    uint8_t  lc3[ECAST_AUDIO_BYTES];              /* 96 bytes stereo LC3plus */
+    uint8_t  lc3[ECAST_AUDIO_BYTES];              /* 144 bytes stereo LC3 */
 } ecast_audio_plain_t;
 
 _Static_assert(sizeof(ecast_audio_plain_t) == 1 + ECAST_AUDIO_BYTES,
@@ -123,10 +123,10 @@ _Static_assert(sizeof(ecast_audio_plain_t) == 1 + ECAST_AUDIO_BYTES,
 
 /* Total on-air frame sizes
  *  - Beacon: header + payload + 8 B CMAC tag (auth, not encryption)
- *  - Audio:  header + 97 B plaintext + 4 B CCM MIC (authenticated encryption)
+ *  - Audio:  header + 145 B plaintext + 4 B CCM MIC (authenticated encryption)
  */
 #define ECAST_BEACON_FRAME_SIZE   (sizeof(ecast_hdr_t) + sizeof(ecast_beacon_payload_t) + ECAST_BEACON_TAG_LEN)  /* 88 B */
-#define ECAST_AUDIO_FRAME_SIZE    (sizeof(ecast_hdr_t) + sizeof(ecast_audio_plain_t) + ECAST_MIC_LEN)             /* 117 B */
+#define ECAST_AUDIO_FRAME_SIZE    (sizeof(ecast_hdr_t) + sizeof(ecast_audio_plain_t) + ECAST_MIC_LEN)             /* 165 B */
 
 /* ─── Crypto constants ─────────────────────────────────────────────── */
 /* AES-CMAC salt used to derive per-stream session key:

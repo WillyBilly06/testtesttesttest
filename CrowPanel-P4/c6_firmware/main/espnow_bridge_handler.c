@@ -39,6 +39,7 @@
 #include "mbedtls/aes.h"
 #include "mbedtls/cipher.h"
 #include "mbedtls/cmac.h"
+#include "mbedtls/sha256.h"
 
 #include "esp_hosted_peer_data.h"
 #include "espnow_protocol.h"
@@ -148,6 +149,7 @@ static TaskHandle_t            s_join_timeout_task = NULL;
 static beacon_msg_t s_selected_beacon;
 static uint32_t     s_selected_room_code;
 static uint32_t     s_selected_stream_id;
+static uint8_t      s_selected_room_hash;
 static uint8_t      s_selected_sink_nonce[16];
 static uint8_t      s_audio_key[ESPNOW_AUDIO_KEY_LEN];
 static int8_t       s_last_rssi;
@@ -243,6 +245,14 @@ static uint32_t hash_room_id(const beacon_msg_t *b)
     for (int i = 0; i < 8; i++) { h ^= (uint8_t)b->room[i]; h *= 16777619u; }
     for (int i = 0; i < 6; i++) { h ^= b->source_mac[i];     h *= 16777619u; }
     return h ? h : 1u;
+}
+
+static void derive_room_hash(const char *room, uint8_t *hash)
+{
+    uint8_t dig[32], in[32] = {0};
+    snprintf((char *)in, sizeof(in), "espnow:%.8s", room);
+    mbedtls_sha256(in, strlen((char *)in), dig, 0);
+    *hash = dig[0] ^ dig[1] ^ dig[2] ^ dig[3];
 }
 
 static uint32_t stream_id_from_beacon(const beacon_msg_t *b)
@@ -515,6 +525,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
         memcpy(&audio, data, sizeof(audio));
         if (audio.frame_bytes != ESPNOW_LC3_FRAME_BYTES ||
             audio.channels != ESPNOW_CHANNELS ||
+            audio.room_hash != s_selected_room_hash ||
             audio.stream_id != s_selected_stream_id ||
             audio.copy_count != ESPNOW_AUDIO_COPY_DEFAULT ||
             audio.copy_idx >= audio.copy_count) {
@@ -523,11 +534,6 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
         if (crc32_audio(audio.payload, ESPNOW_LC3_FRAME_BYTES) != audio.payload_crc32) {
             return;
         }
-        if (s_have_forwarded_seq && (int32_t)(audio.seq - s_last_forwarded_seq) <= 0) {
-            s_audio_late_or_dup++;
-            return;
-        }
-
         espnow_evt_audio_raw_t evt = {0};
         evt.seq = audio.seq;
         evt.capture_us = audio.capture_us;
@@ -710,6 +716,7 @@ static void cmd_join_cb(uint32_t msg_id, const uint8_t *data, size_t len, void *
     s_selected_beacon    = room.beacon;
     s_selected_room_code = room.room_code;
     s_selected_stream_id = room.stream_id;
+    derive_room_hash(room.beacon.room, &s_selected_room_hash);
     memcpy(s_selected_sink_nonce, hello.sink_nonce, sizeof(s_selected_sink_nonce));
     s_waiting_accept     = true;
     s_state = ESPNOW_STATE_JOINING;
