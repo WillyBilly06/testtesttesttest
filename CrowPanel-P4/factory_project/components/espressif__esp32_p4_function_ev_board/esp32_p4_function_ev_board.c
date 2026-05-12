@@ -12,6 +12,7 @@
 #include "esp_check.h"
 #include "esp_spiffs.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_rgb.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_ldo_regulator.h"
 #include "esp_vfs_fat.h"
@@ -21,7 +22,7 @@
 
 #if CONFIG_BSP_LCD_TYPE_1024_600
 #include "esp_lcd_ek79007.h"
-#else
+#elif CONFIG_BSP_LCD_TYPE_1280_800
 #include "esp_lcd_ili9881c.h"
 #endif
 
@@ -381,8 +382,16 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
 // Bit number used to represent command and parameter
 #define LCD_LEDC_CH            CONFIG_BSP_DISPLAY_BRIGHTNESS_LEDC_CH
 
+static int s_brightness_percent = 0;
+
 esp_err_t bsp_display_brightness_init(void)
 {
+    if (BSP_LCD_BACKLIGHT == GPIO_NUM_NC) {
+        s_brightness_percent = 100;
+        ESP_LOGI(TAG, "LCD backlight is managed externally");
+        return ESP_OK;
+    }
+
     // Setup LEDC peripheral for PWM backlight control
     const ledc_channel_config_t LCD_backlight_channel = {
         .gpio_num = BSP_LCD_BACKLIGHT,
@@ -406,7 +415,6 @@ esp_err_t bsp_display_brightness_init(void)
     return ESP_OK;
 }
 
-static int s_brightness_percent = 0;
 int bsp_display_brightness_get(void)
 {
     return s_brightness_percent;
@@ -422,6 +430,11 @@ esp_err_t bsp_display_brightness_set(int brightness_percent)
     }
 
     s_brightness_percent = brightness_percent;
+    if (BSP_LCD_BACKLIGHT == GPIO_NUM_NC) {
+        ESP_LOGD(TAG, "Ignoring LCD brightness %d%%; backlight is managed externally", brightness_percent);
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "Setting LCD backlight: %d%%", brightness_percent);
     uint32_t duty_cycle = (1023 * brightness_percent) / 100; // LEDC resolution set to 10bits, thus: 100% = 1023
     BSP_ERROR_CHECK_RETURN_ERR(ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH, duty_cycle));
@@ -439,6 +452,7 @@ esp_err_t bsp_display_backlight_on(void)
     return bsp_display_brightness_set(100);
 }
 
+#if !CONFIG_BSP_LCD_TYPE_800_480
 static esp_err_t bsp_enable_dsi_phy_power(void)
 {
 #if BSP_MIPI_DSI_PHY_PWR_LDO_CHAN > 0
@@ -454,6 +468,7 @@ static esp_err_t bsp_enable_dsi_phy_power(void)
 
     return ESP_OK;
 }
+#endif
 
 esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_handle_t *ret_panel, esp_lcd_panel_io_handle_t *ret_io)
 {
@@ -472,6 +487,64 @@ esp_err_t bsp_display_new_with_handles(const bsp_display_config_t *config, bsp_l
     esp_err_t ret = ESP_OK;
 
     ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "Brightness init failed");
+#if CONFIG_BSP_LCD_TYPE_800_480
+    esp_lcd_panel_handle_t disp_panel = NULL;
+    esp_lcd_rgb_panel_config_t rgb_config = {
+        .clk_src = LCD_CLK_SRC_DEFAULT,
+        .timings = {
+            .pclk_hz = BSP_LCD_RGB_PIXEL_CLOCK_HZ,
+            .h_res = BSP_LCD_H_RES,
+            .v_res = BSP_LCD_V_RES,
+            .hsync_pulse_width = BSP_LCD_RGB_HSYNC_PW,
+            .hsync_back_porch = BSP_LCD_RGB_HBP,
+            .hsync_front_porch = BSP_LCD_RGB_HFP,
+            .vsync_pulse_width = BSP_LCD_RGB_VSYNC_PW,
+            .vsync_back_porch = BSP_LCD_RGB_VBP,
+            .vsync_front_porch = BSP_LCD_RGB_VFP,
+            .flags = {
+                .pclk_active_neg = true,
+            },
+        },
+        .data_width = 16,
+        .bits_per_pixel = BSP_LCD_BITS_PER_PIXEL,
+        .num_fbs = CONFIG_BSP_LCD_DPI_BUFFER_NUMS,
+        .bounce_buffer_size_px = BSP_LCD_H_RES * 10,
+        .dma_burst_size = 64,
+        .hsync_gpio_num = BSP_LCD_RGB_HSYNC,
+        .vsync_gpio_num = BSP_LCD_RGB_VSYNC,
+        .de_gpio_num = BSP_LCD_RGB_DE,
+        .pclk_gpio_num = BSP_LCD_RGB_PCLK,
+        .disp_gpio_num = BSP_LCD_RGB_DISP_EN,
+        .data_gpio_nums = {
+            BSP_LCD_RGB_DATA0, BSP_LCD_RGB_DATA1, BSP_LCD_RGB_DATA2, BSP_LCD_RGB_DATA3,
+            BSP_LCD_RGB_DATA4, BSP_LCD_RGB_DATA5, BSP_LCD_RGB_DATA6, BSP_LCD_RGB_DATA7,
+            BSP_LCD_RGB_DATA8, BSP_LCD_RGB_DATA9, BSP_LCD_RGB_DATA10, BSP_LCD_RGB_DATA11,
+            BSP_LCD_RGB_DATA12, BSP_LCD_RGB_DATA13, BSP_LCD_RGB_DATA14, BSP_LCD_RGB_DATA15,
+        },
+        .flags = {
+            .fb_in_psram = true,
+        },
+    };
+
+    ESP_GOTO_ON_ERROR(esp_lcd_new_rgb_panel(&rgb_config, &disp_panel), err, TAG, "New RGB LCD panel failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_reset(disp_panel), err, TAG, "RGB LCD panel reset failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_init(disp_panel), err, TAG, "RGB LCD panel init failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_disp_on_off(disp_panel, true), err, TAG, "RGB LCD panel ON failed");
+
+    ret_handles->io = NULL;
+    ret_handles->mipi_dsi_bus = NULL;
+    ret_handles->panel = disp_panel;
+    ret_handles->control = NULL;
+
+    ESP_LOGI(TAG, "RGB display initialized: %dx%d", BSP_LCD_H_RES, BSP_LCD_V_RES);
+    return ret;
+
+err:
+    if (disp_panel) {
+        esp_lcd_panel_del(disp_panel);
+    }
+    return ret;
+#else
     ESP_RETURN_ON_ERROR(bsp_enable_dsi_phy_power(), TAG, "DSI PHY power failed");
 
     /* create MIPI DSI bus first, it will initialize the DSI PHY as well */
@@ -589,6 +662,7 @@ err:
         esp_lcd_del_dsi_bus(mipi_dsi_bus);
     }
     return ret;
+#endif
 }
 
 esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t *ret_touch)

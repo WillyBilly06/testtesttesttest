@@ -26,8 +26,8 @@ bool ecast_derive_session_key(const uint8_t broadcast_code[16],
  *
  *   nonce    = ecast_make_nonce(enc_iv, psn, copy_idx)
  *   AAD      = full ecast_hdr_t (16 B)
- *   plaintext = ecast_audio_plain_t (145 B)
- *   ciphertext = 145 B (written over plaintext in-place-capable) + 4 B MIC
+ *   plaintext = ecast_audio_plain_t (97 B)
+ *   ciphertext = 97 B (written over plaintext in-place-capable) + 4 B MIC
  *
  *   Returns true on success. Out buffer must be ≥ plaintext_len + ECAST_MIC_LEN.
  */

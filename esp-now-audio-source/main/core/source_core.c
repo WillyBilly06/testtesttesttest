@@ -137,10 +137,12 @@ void espnow_recv_cb(const esp_now_recv_info_t *ri, const uint8_t *data, int len)
     memcpy(&h, data, sizeof(h));
 
     const uint8_t *src = ri->src_addr;
-    ESP_LOGI(TAG, "RX from %02X:%02X:%02X:%02X:%02X:%02X len=%d magic=0x%02X type=0x%02X room=0x%08lX",
-             src[0],src[1],src[2],src[3],src[4],src[5], len, h.magic, h.type, (unsigned long)h.room_code);
-
+    /* Drop foreign-protocol traffic silently. ECast frames (magic=0xAC) are
+     * delivered to ecast_recv_cb separately; logging every one of those at
+     * 333 frames/sec swamps the serial console and hides real diagnostics. */
     if (h.magic != PROTO_MAGIC) return;
+    ESP_LOGD(TAG, "RX from %02X:%02X:%02X:%02X:%02X:%02X len=%d magic=0x%02X type=0x%02X room=0x%08lX",
+             src[0],src[1],src[2],src[3],src[4],src[5], len, h.magic, h.type, (unsigned long)h.room_code);
     if (h.room_code != ROOM_CODE) return;
 
     if (h.type == MSG_JOIN && len >= (int)sizeof(join_msg_t)) {
@@ -310,10 +312,32 @@ void source_core_main(void) {
         ESP_LOGE(TAG, "ecast_source_init failed — broadcasts will not start");
     }
 
-    /* Capture task: produces LC3 frames → ecast_source_publish_audio().
-     * Legacy beacon_task / audio_send_task are stubs that exit immediately. */
-    xTaskCreatePinnedToCore(audio_capture_encode_task, "cap_enc", 32768, NULL, TASK_PRIO_CAP_ENC, NULL, 1);
+    /* Core pinning is dual-core only (ESP32). On single-core targets
+     * (e.g. ESP32-C6) all tasks run on core 0 and we rely on priority
+     * preemption alone to protect the audio cadence. */
+#if portNUM_PROCESSORS > 1
+    /* Capture (producer): PCM1808 I2S RX + S24 fill — pinned to core 0 to
+     * keep core 1 hot for the cadence-critical emitter. Priority kept
+     * moderate (TASK_PRIO_CAP_ENC) so it can be preempted by WiFi without
+     * stalling audio (the PCM ring absorbs jitter). Stack is modest now
+     * that the minimp3 decoder is gone; I2S + LC3 encoder bring-up only. */
+    xTaskCreatePinnedToCore(audio_capture_encode_task, "i2s_cap", 8192, NULL, TASK_PRIO_CAP_ENC, NULL, 0);
+
+    /* Emitter (consumer): LC3plus encode + ecast publish + 5 ms pacing.
+     * Pinned to core 1 at priority 22 — well above WiFi/ESP-NOW callbacks
+     * — so nothing on this core can stall the cadence. */
+    xTaskCreatePinnedToCore(audio_emit_task, "lc3_emit", 8192, NULL, 22, NULL, 1);
+
     xTaskCreatePinnedToCore(udp_audio_send_task, "udp_send", 4096, NULL, TASK_PRIO_UDP_SEND, NULL, 0);
     xTaskCreatePinnedToCore(udp_server_task, "udp_srv", 4096, NULL, 3, NULL, 0);
     xTaskCreatePinnedToCore(source_stats_task, "src_stats", 3072, NULL, 1, NULL, 1);
+#else
+    /* Single-core (ESP32-C6 etc.): emitter at high priority so it
+     * preempts WiFi/decoder callbacks; capture + UDP at lower priority. */
+    xTaskCreate(audio_capture_encode_task, "i2s_cap",   8192, NULL, TASK_PRIO_CAP_ENC, NULL);
+    xTaskCreate(audio_emit_task,            "lc3_emit", 8192, NULL, 22,                NULL);
+    xTaskCreate(udp_audio_send_task,        "udp_send", 4096, NULL, TASK_PRIO_UDP_SEND, NULL);
+    xTaskCreate(udp_server_task,            "udp_srv",  4096, NULL, 3,                  NULL);
+    xTaskCreate(source_stats_task,          "src_stats",3072, NULL, 1,                  NULL);
+#endif
 }

@@ -131,6 +131,8 @@ menu "Board Support Package(ESP32-P4)"
                 bool "LCD 7-inch 1024x600 - ek79007"
             config BSP_LCD_TYPE_1280_800
                 bool "LCD 1280x800 - ili9881c"
+            config BSP_LCD_TYPE_800_480
+                bool "LCD 5-inch 800x480 RGB - CrowPanel Advanced"
         endchoice           
         
     endmenu

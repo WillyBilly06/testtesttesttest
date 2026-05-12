@@ -12,10 +12,10 @@ lv_obj_set_style_bg_color(ui_ScreenSettingLight, lv_color_hex(0xE5F3FF), LV_PART
 lv_obj_set_style_bg_opa(ui_ScreenSettingLight, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
 
 ui_PanelScreenSettingLightSwitch = lv_obj_create(ui_ScreenSettingLight);
-lv_obj_set_height( ui_PanelScreenSettingLightSwitch, 83);
+lv_obj_set_height( ui_PanelScreenSettingLightSwitch, 70);
 lv_obj_set_width( ui_PanelScreenSettingLightSwitch, lv_pct(90));
-lv_obj_set_x( ui_PanelScreenSettingLightSwitch, 43 );
-lv_obj_set_y( ui_PanelScreenSettingLightSwitch, 77 );
+lv_obj_set_x( ui_PanelScreenSettingLightSwitch, 40 );
+lv_obj_set_y( ui_PanelScreenSettingLightSwitch, 62 );
 lv_obj_clear_flag( ui_PanelScreenSettingLightSwitch, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 lv_obj_set_style_radius(ui_PanelScreenSettingLightSwitch, 20, LV_PART_MAIN| LV_STATE_DEFAULT);
 

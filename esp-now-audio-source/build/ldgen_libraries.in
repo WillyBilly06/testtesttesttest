@@ -158,7 +158,6 @@ $<TARGET_FILE:idf::spiffs>
 $<TARGET_FILE:idf::wifi_provisioning>
 $<TARGET_FILE:__idf_json>
 $<TARGET_FILE:idf::liblc3>
-$<TARGET_FILE:idf::minimp3>
 $<TARGET_FILE:idf::main>
 $<TARGET_FILE:__idf_liblc3>
-$<TARGET_FILE:__idf_minimp3>
+$<TARGET_FILE:idf::minimp3>

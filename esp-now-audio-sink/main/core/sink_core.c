@@ -13,6 +13,8 @@ uint8_t  sel_mac[6] = {0};
 uint32_t sel_room = 0;
 uint8_t  sel_channel = 0;
 uint32_t sel_stream_id = 0;
+volatile bool selected_is_ecast = false;
+volatile uint16_t selected_pres_delay_us = ECAST_PRES_DELAY_US;
 volatile bool selected = false;
 
 rx_slot_t rx_slots[RX_SLOTS];
@@ -67,6 +69,59 @@ void add_or_update_room(const uint8_t mac[6], const beacon_msg_t *b, int8_t rssi
     r->stream_id = b->stream_id;
 }
 
+void add_or_update_ecast_room(const uint8_t mac[6], const ecast_beacon_payload_t *b, int8_t rssi,
+                              const uint8_t session_key[16], bool session_key_valid,
+                              int32_t beacon_clock_offset_us) {
+    uint32_t room_code = (uint32_t)(b->broadcast_id & 0xFFFFFFFFU);
+    for (int i = 0; i < room_count; i++) {
+        if (rooms[i].active &&
+            rooms[i].ecast &&
+            rooms[i].stream_id == b->stream_id_full) {
+            rooms[i].rssi = rssi;
+            rooms[i].channel = b->wifi_channel;
+            rooms[i].room_code = room_code;
+            rooms[i].broadcast_id = b->broadcast_id;
+            rooms[i].pres_delay_us = b->pres_delay_us;
+            rooms[i].is_encrypted = (b->is_encrypted != 0);
+            rooms[i].session_key_valid = session_key_valid;
+            memcpy(rooms[i].enc_iv, b->enc_iv, sizeof(rooms[i].enc_iv));
+            memcpy(rooms[i].key_diversifier, b->key_diversifier, sizeof(rooms[i].key_diversifier));
+            if (session_key_valid) memcpy(rooms[i].session_key, session_key, sizeof(rooms[i].session_key));
+            if (rooms[i].clock_sync_count == 0) {
+                rooms[i].clock_offset_us = beacon_clock_offset_us;
+            } else {
+                rooms[i].clock_offset_us += (beacon_clock_offset_us - rooms[i].clock_offset_us) / 8;
+            }
+            rooms[i].clock_sync_count++;
+            memset(rooms[i].name, 0, sizeof(rooms[i].name));
+            memcpy(rooms[i].name, b->name, sizeof(rooms[i].name) - 1);
+            if (memcmp(rooms[i].mac, mac, 6) != 0) memcpy(rooms[i].mac, mac, 6);
+            return;
+        }
+    }
+    if (room_count >= MAX_ROOMS) return;
+
+    room_info_t *r = &rooms[room_count++];
+    memset(r, 0, sizeof(*r));
+    r->active = true;
+    r->ecast = true;
+    r->room_code = room_code;
+    r->channel = b->wifi_channel;
+    memcpy(r->mac, mac, 6);
+    r->rssi = rssi;
+    r->stream_id = b->stream_id_full;
+    r->broadcast_id = b->broadcast_id;
+    r->pres_delay_us = b->pres_delay_us;
+    r->is_encrypted = (b->is_encrypted != 0);
+    r->session_key_valid = session_key_valid;
+    memcpy(r->enc_iv, b->enc_iv, sizeof(r->enc_iv));
+    memcpy(r->key_diversifier, b->key_diversifier, sizeof(r->key_diversifier));
+    if (session_key_valid) memcpy(r->session_key, session_key, sizeof(r->session_key));
+    r->clock_offset_us = beacon_clock_offset_us;
+    r->clock_sync_count = 1;
+    memcpy(r->name, b->name, sizeof(r->name) - 1);
+}
+
 int uart_read_line(char *buf, int max_len) {
     int pos = 0;
     while (pos < max_len - 1) {
@@ -88,6 +143,28 @@ void flush_full_queue(void) {
     while (xQueueReceive(full_q, &idx, 0) == pdTRUE) {
         xQueueSend(free_q, &idx, 0);
     }
+}
+
+bool queue_rx_audio(const audio_msg_t *msg, int len) {
+    uint8_t idx;
+    if (xQueueReceive(free_q, &idx, 0) != pdTRUE) {
+        if (xQueueReceive(full_q, &idx, 0) == pdTRUE) {
+            stat_dropped++;
+        } else {
+            return false;
+        }
+    }
+
+    if (len > (int)sizeof(audio_msg_t)) len = sizeof(audio_msg_t);
+    memcpy(&rx_slots[idx].msg, msg, len);
+    rx_slots[idx].len = len;
+
+    if (xQueueSend(full_q, &idx, 0) != pdTRUE) {
+        xQueueSend(free_q, &idx, 0);
+        stat_dropped++;
+        return false;
+    }
+    return true;
 }
 
 int32_t iabs32(int32_t v) {

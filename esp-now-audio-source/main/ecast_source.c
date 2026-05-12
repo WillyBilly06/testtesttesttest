@@ -55,13 +55,31 @@ typedef struct {
     uint8_t  lc3[ECAST_AUDIO_BYTES];
 } ecast_pending_frame_t;
 
-#define ECAST_TX_QUEUE_DEPTH   4   /* small: scheduler drains fast */
+#define ECAST_TX_QUEUE_DEPTH   6   /* small: scheduler drains fast */
+
+static void apply_broadcast_peer_rate(void)
+{
+    esp_now_rate_config_t rcfg = {
+        .phymode = WIFI_PHY_MODE_HT20,
+        .rate = WIFI_PHY_RATE_MCS1_LGI,
+        .ersu = false,
+        .dcm = false,
+    };
+    esp_err_t err = esp_now_set_peer_rate_config(BROADCAST_MAC, &rcfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(ETAG, "broadcast peer MCS1 HT20 rate set failed: %s",
+                 esp_err_to_name(err));
+    }
+}
 
 /* ─── Helpers ─────────────────────────────────────────────────────── */
 
 static void ensure_broadcast_peer(void)
 {
-    if (esp_now_is_peer_exist(BROADCAST_MAC)) return;
+    if (esp_now_is_peer_exist(BROADCAST_MAC)) {
+        apply_broadcast_peer_rate();
+        return;
+    }
 
     esp_now_peer_info_t p = {0};
     memcpy(p.peer_addr, BROADCAST_MAC, 6);
@@ -71,7 +89,10 @@ static void ensure_broadcast_peer(void)
     esp_err_t err = esp_now_add_peer(&p);
     if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
         ESP_LOGW(ETAG, "add broadcast peer: %d", err);
+        return;
     }
+
+    apply_broadcast_peer_rate();
 }
 
 /* Build a single on-air copy of an audio frame and TX it.
@@ -118,6 +139,8 @@ static void tx_one_audio_copy(const ecast_pending_frame_t *pf, uint8_t copy_idx)
     esp_err_t err = esp_now_send(BROADCAST_MAC, frame, sizeof(frame));
     if (err != ESP_OK) {
         ecast_tx_fail++;
+    } else {
+        ecast_tx_ok++;
     }
 }
 
@@ -257,8 +280,12 @@ bool ecast_source_init(uint64_t broadcast_id,
         return false;
     }
 
+    /* Priority 12: above ecast_sched (10) and the audio decoder/UDP tasks
+     * but still well below lc3_emit (22), so beacons get out reliably on
+     * single-core targets without disturbing audio cadence. The beacon work
+     * itself (build + CMAC + esp_now_send) is ~1 ms once per 100 ms. */
     rc = xTaskCreatePinnedToCore(beacon_task_fn, "ecast_beacon",
-                                 3072, NULL, 2, &s_beacon_task, 0);
+                                 3072, NULL, 12, &s_beacon_task, 0);
     if (rc != pdPASS) {
         ESP_LOGE(ETAG, "beacon task create failed");
         return false;

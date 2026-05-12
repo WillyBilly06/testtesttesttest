@@ -8,5 +8,5 @@ idf_component_register(
         "ecast_source.c"
         "ecast_crypto.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_wifi esp_timer nvs_flash esp_http_server liblc3 minimp3 esp_partition spi_flash mbedtls
+    REQUIRES esp_wifi esp_timer nvs_flash esp_http_server liblc3 driver mbedtls
 )

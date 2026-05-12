@@ -3,8 +3,8 @@
  *
  * Initializes:
  * 1. ESP-Hosted coprocessor (WiFi/BT via SDIO to P4)
- * 2. ESP-NOW audio sink (room scanning, joining, LC3 decode)
- * 3. Custom data bridge (sends audio/events to P4 via SDIO)
+ * 2. ESP-NOW room verification bridge (scan, HELLO/ACCEPT authentication)
+ * 3. Custom data bridge (sends room events and nRF24 config to P4 via SDIO)
  */
 
 #include <string.h>
@@ -31,8 +31,8 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_hosted_coprocessor_init());
     ESP_LOGI(TAG, "ESP-Hosted coprocessor ready");
 
-    /* Initialize ESP-NOW sink bridge (registers SDIO command handlers) */
-    ESP_LOGI(TAG, "Initializing ESP-NOW sink bridge...");
+    /* Initialize room verification bridge (registers SDIO command handlers) */
+    ESP_LOGI(TAG, "Initializing room verification bridge...");
     ESP_ERROR_CHECK(espnow_sink_c6_init());
-    ESP_LOGI(TAG, "ESP-NOW sink bridge ready");
+    ESP_LOGI(TAG, "Room verification bridge ready");
 }

@@ -1,9 +1,10 @@
 /*
- * ESP-NOW Audio Sink for CrowPanel P4
+ * Assistive Listening Sink for CrowPanel P4
  *
  * P4-side component that communicates with C6 coprocessor via ESP-Hosted
- * custom data channel (SDIO). All ESP-NOW/WiFi runs on C6.
- * P4 sends commands, receives events + decoded PCM audio.
+ * custom data channel (SDIO). The C6 owns ESP-NOW room discovery and
+ * authentication and receives ESP-NOW audio; the P4 decodes LC3 audio from
+ * C6-forwarded SDIO events and plays it.
  */
 #pragma once
 
@@ -17,13 +18,9 @@
 extern "C" {
 #endif
 
-/* Room information — superset that now carries the EspCastBR beacon
- * metadata needed for audio decryption.
- *
- * Legacy fields (mac/wifi_channel/room_code/stream_id/rssi/valid) stay
- * unchanged so existing UI code keeps compiling. The ECast fields are
- * populated when an authenticated beacon arrives and are used by the
- * audio handler to derive the session key and decrypt frames.
+/* Room information. The first fields are used by the existing Settings UI;
+ * the remaining fields are retained for ABI/source compatibility with older
+ * EspCast builds and are zeroed by the room-verification path.
  */
 typedef struct {
     uint8_t  mac[6];
@@ -42,6 +39,8 @@ typedef struct {
     bool     is_encrypted;
     bool     session_key_valid;
     uint16_t pres_delay_us;
+    int32_t  clock_offset_us;
+    uint32_t clock_sync_count;
 } espnow_room_info_t;
 
 static inline void espnow_decode_room_code(uint32_t room_code, uint16_t *building, uint16_t *room, uint8_t *suffix)
@@ -60,7 +59,7 @@ static inline void espnow_decode_room_code(uint32_t room_code, uint16_t *buildin
 #define ESPNOW_SINK_MAX_ROOMS ESPNOW_MAX_ROOMS
 
 /**
- * @brief Callback for audio data received from C6
+ * @brief Optional decoded-audio callback
  * @param pcm  Interleaved 16-bit stereo PCM samples
  * @param samples  Number of samples per channel
  * @param seq  Sequence number
@@ -113,7 +112,7 @@ void espnow_sink_set_callbacks(const espnow_sink_callbacks_t *cbs);
 void espnow_sink_deinit(void);
 
 /**
- * @brief Tell C6 to initialize ESP-NOW + WiFi
+ * @brief Tell C6 to initialize ESP-NOW room verification
  * @return ESP_OK if command sent successfully
  */
 esp_err_t espnow_sink_enable(void);
@@ -122,10 +121,9 @@ esp_err_t espnow_sink_enable(void);
  * @brief Enable or disable the autoscan/autoconnect state machine.
  *
  * When enabled, a dedicated task owns the lifecycle: it sends CMD_INIT to
- * the C6 if needed, then loops scan → auto-join highest-RSSI room →
- * monitor → on disconnect reconnect up to 10 × 500 ms → on giveup rescan.
- * UI code must not call espnow_sink_enable/disable/start_scan/join_room
- * while autoscan is on; it should only call this function.
+ * the C6 if needed, then keeps scanning so the room list stays fresh. It does
+ * not auto-join unless autojoin is explicitly enabled. A user-selected room is
+ * automatically retried for the source-timeout window if audio drops.
  *
  * @param enable  true to start the state machine, false to stop it.
  */
@@ -135,6 +133,18 @@ void espnow_sink_set_autoscan(bool enable);
  * @brief Query whether autoscan is currently enabled.
  */
 bool espnow_sink_get_autoscan(void);
+
+/**
+ * @brief Enable or disable auto-join behaviour inside the autoscan task.
+ *
+ * When auto-join is true, the autoscan task will join the highest-RSSI room it
+ * discovers. The Settings UI keeps this false so the user picks a room. When false, it keeps the room list
+ * fresh but never joins on its own — the user must call
+ * espnow_sink_join_room() explicitly. Drop-recovery (rejoining the same
+ * cached target after an audio drop) still works regardless of this
+ * flag, so a user-initiated join is auto-recovered if it drops.
+ */
+void espnow_sink_set_autoscan_autojoin(bool autojoin);
 
 /**
  * @brief Tell C6 to deinitialize ESP-NOW
@@ -169,6 +179,22 @@ int espnow_sink_get_rooms(espnow_room_info_t *rooms, int max_rooms);
 esp_err_t espnow_sink_join_room(int room_index);
 
 /**
+ * @brief Set software output volume for direct assistive playback.
+ *
+ * This controls the P4-side PCM path used by the AUX DAC and mirrors the UI
+ * volume when SPEAKER is selected.
+ */
+void espnow_sink_set_output_volume(int volume);
+
+/**
+ * @brief Write a short silence burst to the direct AUX I2S path.
+ *
+ * Useful before routing playback to SPEAKER so the PCM5102A line is not left
+ * holding the last active samples.
+ */
+void espnow_sink_flush_aux_output(void);
+
+/**
  * @brief Leave the current room (stop receiving audio)
  * @return true if C6 was responsive (LEAVE command sent), false if C6 appears dead (SDIO stale)
  */
@@ -196,6 +222,19 @@ bool espnow_sink_is_c6_ready(void);
  * @param packets_lost Output: packets lost (can be NULL)
  */
 void espnow_sink_get_stats(uint32_t *packets_rx, uint32_t *packets_lost);
+
+/**
+ * @brief Get the room code of the currently connected room.
+ * @return room code, or 0 if not connected.
+ */
+uint32_t espnow_sink_get_room_code(void);
+
+/**
+ * @brief Get the currently connected room information.
+ * @param room Output room info.
+ * @return true if connected room info was copied.
+ */
+bool espnow_sink_get_connected_room(espnow_room_info_t *room);
 
 /**
  * @brief Request status update from C6

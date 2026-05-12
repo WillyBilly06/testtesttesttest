@@ -47,7 +47,7 @@
 #define BSP_LCD_MIPI_DSI_LCD_VSYNC    (635)
 #define BSP_LCD_MIPI_DSI_LCD_VBP      (23)
 #define BSP_LCD_MIPI_DSI_LCD_VFP      (12)
-#else
+#elif CONFIG_BSP_LCD_TYPE_1280_800
 /* LCD display definition 1280x800 */
 #define BSP_LCD_H_RES              (800)
 #define BSP_LCD_V_RES              (1280)
@@ -58,6 +58,18 @@
 #define BSP_LCD_MIPI_DSI_LCD_VSYNC    (4)
 #define BSP_LCD_MIPI_DSI_LCD_VBP      (16)
 #define BSP_LCD_MIPI_DSI_LCD_VFP      (16)
+#else
+/* LCD display definition 800x480 */
+#define BSP_LCD_H_RES              (800)
+#define BSP_LCD_V_RES              (480)
+
+#define BSP_LCD_RGB_PIXEL_CLOCK_HZ (18 * 1000 * 1000)
+#define BSP_LCD_RGB_HSYNC_PW       (4)
+#define BSP_LCD_RGB_HBP            (8)
+#define BSP_LCD_RGB_HFP            (8)
+#define BSP_LCD_RGB_VSYNC_PW       (4)
+#define BSP_LCD_RGB_VBP            (16)
+#define BSP_LCD_RGB_VFP            (16)
 #endif
 
 #define BSP_LCD_MIPI_DSI_LANE_NUM          (2)    // 2 data lanes

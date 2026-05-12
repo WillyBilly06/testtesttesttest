@@ -30,7 +30,7 @@ static esp_codec_dev_handle_t record_dev_handle;
 static bool _is_audio_init = false;
 static bool _is_player_init = false;
 static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
-static bsp_extra_audio_output_route_t s_output_route = BSP_EXTRA_AUDIO_OUTPUT_SPEAKER;
+static bsp_extra_audio_output_route_t s_output_route = BSP_EXTRA_AUDIO_OUTPUT_AUX;
 static i2s_chan_handle_t s_aux_tx_chan = NULL;
 static uint32_t s_aux_sample_rate = CODEC_DEFAULT_SAMPLE_RATE;
 static uint32_t s_aux_bits = CODEC_DEFAULT_BIT_WIDTH;
@@ -52,95 +52,19 @@ static inline int16_t aux_scale_sample_i16(int16_t sample, int volume)
     return (int16_t)scaled;
 }
 
-static i2s_data_bit_width_t aux_data_width_from_bits(uint32_t bits)
+/* Scale a 24-bit sample stored left-aligned in a 32-bit slot (s24<<8).
+ * The codec/I2S peripheral uses the upper 24 bits and ignores the lower
+ * 8, so we scale on int64 to avoid overflow then re-clamp into int32. */
+static inline int32_t aux_scale_sample_s24_in_s32(int32_t sample, int volume)
 {
-    if (bits <= 16) {
-        return I2S_DATA_BIT_WIDTH_16BIT;
+    int64_t scaled = ((int64_t)sample * volume) / 100;
+    if (scaled > INT32_MAX) {
+        return INT32_MAX;
     }
-    if (bits <= 24) {
-        return I2S_DATA_BIT_WIDTH_24BIT;
+    if (scaled < INT32_MIN) {
+        return INT32_MIN;
     }
-    return I2S_DATA_BIT_WIDTH_32BIT;
-}
-
-static esp_err_t aux_i2s_deinit(void)
-{
-    if (s_aux_tx_chan == NULL) {
-        return ESP_OK;
-    }
-    i2s_channel_disable(s_aux_tx_chan);
-    esp_err_t ret = i2s_del_channel(s_aux_tx_chan);
-    s_aux_tx_chan = NULL;
-    return ret;
-}
-
-static esp_err_t aux_i2s_init(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
-{
-    ESP_RETURN_ON_ERROR(aux_i2s_deinit(), TAG, "deinit aux i2s failed");
-
-    i2s_chan_config_t aux_chan_cfg = {
-        .id = I2S_NUM_2,
-        .role = I2S_ROLE_MASTER,
-        .dma_desc_num = 6,
-        .dma_frame_num = 256,
-        .auto_clear = true,
-        .intr_priority = 0,
-    };
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&aux_chan_cfg, &s_aux_tx_chan, NULL), TAG, "new aux i2s channel failed");
-
-    i2s_data_bit_width_t data_width = aux_data_width_from_bits(bits_cfg);
-    i2s_std_config_t aux_std_cfg = {
-        .clk_cfg = {
-            .sample_rate_hz = rate,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-        },
-        .slot_cfg = {
-            .data_bit_width = data_width,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = ch,
-            .slot_mask = (ch == I2S_SLOT_MODE_MONO) ? I2S_STD_SLOT_LEFT : I2S_STD_SLOT_BOTH,
-            .ws_width = data_width,
-            .ws_pol = false,
-            .bit_shift = true,
-            .left_align = true,
-            .big_endian = false,
-            .bit_order_lsb = false,
-        },
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = GPIO_NUM_8,
-            .ws = GPIO_NUM_6,
-            .dout = GPIO_NUM_7,
-            .din = I2S_GPIO_UNUSED,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv = false,
-            },
-        },
-    };
-
-    esp_err_t ret = i2s_channel_init_std_mode(s_aux_tx_chan, &aux_std_cfg);
-    if (ret != ESP_OK) {
-        i2s_del_channel(s_aux_tx_chan);
-        s_aux_tx_chan = NULL;
-        return ret;
-    }
-    ret = i2s_channel_enable(s_aux_tx_chan);
-    if (ret != ESP_OK) {
-        i2s_del_channel(s_aux_tx_chan);
-        s_aux_tx_chan = NULL;
-        return ret;
-    }
-
-    s_aux_sample_rate = rate;
-    s_aux_bits = bits_cfg;
-    s_aux_slot_mode = ch;
-    ESP_LOGI(TAG, "AUX I2S enabled on GPIO6/7/8 (%lu Hz, %lu-bit)",
-             (unsigned long)rate, (unsigned long)bits_cfg);
-
-    return ESP_OK;
+    return (int32_t)scaled;
 }
 
 /**************************************************************************************************
@@ -149,111 +73,41 @@ static esp_err_t aux_i2s_init(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t 
  *
  **************************************************************************************************/
 
-static esp_err_t audio_mute_function(AUDIO_PLAYER_MUTE_SETTING setting)
-{
-    // Volume saved when muting and restored when unmuting. Restoring volume is necessary
-    // as es8311_set_voice_mute(true) results in voice volume (REG32) being set to zero.
-
-    bsp_extra_codec_mute_set(setting == AUDIO_PLAYER_MUTE ? true : false);
-
-    // restore the voice volume upon unmuting
-    if (setting == AUDIO_PLAYER_UNMUTE) {
-        ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(play_dev_handle, _vloume_intensity), TAG, "Set Codec volume failed");
-    }
-
-    return ESP_OK;
-}
-
-static void audio_callback(audio_player_cb_ctx_t *ctx)
-{
-    if (audio_idle_callback) {
-        ctx->user_ctx = audio_idle_cb_user_data;
-        audio_idle_callback(ctx);
-    }
-}
-
 esp_err_t bsp_extra_i2s_read(void *audio_buffer, size_t len, size_t *bytes_read, uint32_t timeout_ms)
 {
-    esp_err_t ret = ESP_OK;
-    ret = esp_codec_dev_read(record_dev_handle, audio_buffer, len);
-    *bytes_read = len;
-    return ret;
+    (void)audio_buffer;
+    (void)len;
+    (void)timeout_ms;
+    if (bytes_read) {
+        *bytes_read = 0;
+    }
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t bsp_extra_i2s_write(void *audio_buffer, size_t len, size_t *bytes_written, uint32_t timeout_ms)
 {
-    if ((s_output_route == BSP_EXTRA_AUDIO_OUTPUT_AUX) && (s_aux_tx_chan != NULL)) {
-        /* AUX uses direct I2S output; apply software volume so UI slider works on AUX too. */
-        if ((audio_buffer != NULL) && (len >= sizeof(int16_t)) && (s_aux_bits <= 16)) {
-            if (_vloume_intensity <= 0) {
-                memset(audio_buffer, 0, len);
-            } else if (_vloume_intensity < 100) {
-                int16_t *samples = (int16_t *)audio_buffer;
-                size_t sample_count = len / sizeof(int16_t);
-                for (size_t i = 0; i < sample_count; i++) {
-                    samples[i] = aux_scale_sample_i16(samples[i], _vloume_intensity);
-                }
-            }
-        }
-
-        size_t written = 0;
-        TickType_t timeout_ticks = (timeout_ms == 0) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
-        esp_err_t ret = i2s_channel_write(s_aux_tx_chan, audio_buffer, len, &written, timeout_ticks);
-        if (bytes_written != NULL) {
-            *bytes_written = written;
-        }
-        return ret;
+    (void)audio_buffer;
+    (void)len;
+    (void)timeout_ms;
+    if (bytes_written) {
+        *bytes_written = 0;
     }
-
-    esp_err_t ret = esp_codec_dev_write(play_dev_handle, audio_buffer, len);
-    if (bytes_written != NULL) {
-        *bytes_written = len;
-    }
-    return ret;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
 {
-    esp_err_t ret = ESP_OK;
-
-    esp_codec_dev_sample_info_t fs = {
-        .sample_rate = rate,
-        .channel = ch,
-        .bits_per_sample = bits_cfg,
-    };
-
-    if (play_dev_handle) {
-        ret = esp_codec_dev_close(play_dev_handle);
-    }
-    if (record_dev_handle) {
-        ret |= esp_codec_dev_close(record_dev_handle);
-        ret |= esp_codec_dev_set_in_gain(record_dev_handle, CODEC_DEFAULT_ADC_VOLUME);
-    }
-
-    if (play_dev_handle) {
-        ret |= esp_codec_dev_open(play_dev_handle, &fs);
-    }
-    if (record_dev_handle) {
-        ret |= esp_codec_dev_open(record_dev_handle, &fs);
-    }
-
     s_aux_sample_rate = rate;
     s_aux_bits = bits_cfg;
     s_aux_slot_mode = ch;
-    if (s_output_route == BSP_EXTRA_AUDIO_OUTPUT_AUX) {
-        ret |= aux_i2s_init(rate, bits_cfg, ch);
-    }
+    /* AUX I2S is owned exclusively by espnow_sink on I2S_NUM_0. */
 
-    return ret;
+    return ESP_OK;
 }
 
 esp_err_t bsp_extra_output_route_set(bsp_extra_audio_output_route_t route)
 {
-    if (route == BSP_EXTRA_AUDIO_OUTPUT_AUX) {
-        ESP_RETURN_ON_ERROR(aux_i2s_init(s_aux_sample_rate, s_aux_bits, s_aux_slot_mode), TAG, "init aux route failed");
-    }
     s_output_route = route;
-    ESP_LOGI(TAG, "Audio output route set to %s", (route == BSP_EXTRA_AUDIO_OUTPUT_AUX) ? "AUX" : "SPEAKER");
     return ESP_OK;
 }
 
@@ -264,10 +118,12 @@ bsp_extra_audio_output_route_t bsp_extra_output_route_get(void)
 
 esp_err_t bsp_extra_codec_volume_set(int volume, int *volume_set)
 {
-    ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(play_dev_handle, volume), TAG, "Set Codec volume failed");
     _vloume_intensity = volume;
+    if (volume_set) {
+        *volume_set = volume;
+    }
 
-    ESP_LOGI(TAG, "Setting volume: %d", volume);
+    ESP_LOGI(TAG, "AUX-only volume setting: %d", volume);
 
     return ESP_OK;
 }
@@ -279,23 +135,13 @@ int bsp_extra_codec_volume_get(void)
 
 esp_err_t bsp_extra_codec_mute_set(bool enable)
 {
-    esp_err_t ret = ESP_OK;
-    ret = esp_codec_dev_set_out_mute(play_dev_handle, enable);
-    return ret;
+    (void)enable;
+    return ESP_OK;
 }
 
 esp_err_t bsp_extra_codec_dev_stop(void)
 {
-    esp_err_t ret = ESP_OK;
-
-    if (play_dev_handle) {
-        ret = esp_codec_dev_close(play_dev_handle);
-    }
-
-    if (record_dev_handle) {
-        ret = esp_codec_dev_close(record_dev_handle);
-    }
-    return ret;
+    return ESP_OK;
 }
 
 esp_err_t bsp_extra_codec_dev_resume(void)
@@ -305,48 +151,24 @@ esp_err_t bsp_extra_codec_dev_resume(void)
 
 esp_err_t bsp_extra_codec_init()
 {
-    if (_is_audio_init) {
-        return ESP_OK;
-    }
-
-    play_dev_handle = bsp_audio_codec_speaker_init();
-    assert((play_dev_handle) && "play_dev_handle not initialized");
-
-    record_dev_handle = bsp_audio_codec_microphone_init();
-    assert((record_dev_handle) && "record_dev_handle not initialized");
-
-    bsp_extra_codec_set_fs(CODEC_DEFAULT_SAMPLE_RATE, CODEC_DEFAULT_BIT_WIDTH, CODEC_DEFAULT_CHANNEL);
-
+    play_dev_handle = NULL;
+    record_dev_handle = NULL;
     _is_audio_init = true;
+    ESP_LOGI(TAG, "BSP speaker/mic codec disabled; ESP-NOW AUX owns I2S_NUM_0");
 
     return ESP_OK;
 }
 
 esp_err_t bsp_extra_player_init(void)
 {
-    if (_is_player_init) {
-        return ESP_OK;
-    }
-
-    audio_player_config_t config = { .mute_fn = audio_mute_function,
-                                     .write_fn = bsp_extra_i2s_write,
-                                     .clk_set_fn = bsp_extra_codec_set_fs,
-                                     .priority = 5
-                                   };
-    ESP_RETURN_ON_ERROR(audio_player_new(config), TAG, "audio_player_init failed");
-    audio_player_callback_register(audio_callback, NULL);
-
-    _is_player_init = true;
-
-    return ESP_OK;
+    _is_player_init = false;
+    ESP_LOGW(TAG, "BSP audio player disabled while assistive AUX owns I2S_NUM_0");
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t bsp_extra_player_del(void)
 {
     _is_player_init = false;
-
-    ESP_RETURN_ON_ERROR(audio_player_delete(), TAG, "audio_player_delete failed");
-
     return ESP_OK;
 }
 
@@ -365,37 +187,15 @@ esp_err_t bsp_extra_file_instance_init(const char *path, file_iterator_instance_
 
 esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int index)
 {
-    ESP_RETURN_ON_FALSE(instance, ESP_FAIL, TAG, "instance is NULL");
-
-    ESP_LOGI(TAG, "play_index(%d)", index);
-    char filename[128];
-    int retval = file_iterator_get_full_path_from_index(instance, index, filename, sizeof(filename));
-    ESP_RETURN_ON_FALSE(retval != 0, ESP_FAIL, TAG, "file_iterator_get_full_path_from_index failed");
-
-    ESP_LOGI(TAG, "opening file '%s'", filename);
-    FILE *fp = fopen(filename, "rb");
-    ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
-
-    ESP_LOGI(TAG, "Playing '%s'", filename);
-    ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
-
-    memcpy(audio_file_path, filename, sizeof(audio_file_path));
-
-    return ESP_OK;
+    (void)instance;
+    (void)index;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 esp_err_t bsp_extra_player_play_file(const char *file_path)
 {
-    ESP_LOGI(TAG, "opening file '%s'", file_path);
-    FILE *fp = fopen(file_path, "rb");
-    ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
-
-    ESP_LOGI(TAG, "Playing '%s'", file_path);
-    ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
-
-    memcpy(audio_file_path, file_path, sizeof(audio_file_path));
-
-    return ESP_OK;
+    (void)file_path;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 void bsp_extra_player_register_callback(audio_player_cb_t cb, void *user_data)

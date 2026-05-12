@@ -23,6 +23,15 @@ static void sta_reconnect_timer_cb(TimerHandle_t tmr) {
  * ~1 second (100 ms active scan × 13 channels minus early termination).
  * Returns 1, 6, or 11. Falls back to WIFI_CHANNEL_DEFAULT on failure. */
 static uint8_t pick_best_channel(void) {
+    /* Multi-source coexistence: lock all sources to WIFI_CHANNEL_DEFAULT (6).
+     * The auto-scan path below is left intact for future re-enabling but is
+     * skipped while we want both ESP32 and ESP32-C6 sources broadcasting on
+     * the same fixed channel so the sink can hear them simultaneously. */
+    ESP_LOGI(TAG, "Channel scan: locked to ch %u (multi-source mode)",
+             (unsigned)WIFI_CHANNEL_DEFAULT);
+    return WIFI_CHANNEL_DEFAULT;
+
+    /* Original auto-scan code preserved below — currently unreachable. */
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL, .bssid = NULL,
         .channel = 0,            /* 0 = all channels */
@@ -414,6 +423,43 @@ void wifi_start_apsta(const char *ssid, const char *password) {
 
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(WIFI_TX_POWER_QDBM));
+
+    /* ── 802.11n HT20 on both interfaces ──────────────────────────────
+     *
+     * Enable the 11N protocol bit on the AP+STA so the radio can both
+     * accept and emit HT-rate frames. Bandwidth pinned to HT20 (20 MHz)
+     * — we deliberately do not use HT40 because:
+     *   1. Most upstream APs in the deployment band are 20 MHz.
+     *   2. HT40 would force ESP-NOW peers to also be HT40, breaking
+     *      backward compatibility with anything legacy.
+     *   3. HT20 has +3 dB SNR over HT40 at the same MCS → more range,
+     *      which is the whole point of switching off legacy 24M.
+     * Errors here are non-fatal: the radio still works at legacy rates
+     * if the caller's IDF build doesn't support 11N (older ESP32 ROMs). */
+    {
+        const uint8_t proto_bits = WIFI_PROTOCOL_11B
+                                 | WIFI_PROTOCOL_11G
+                                 | WIFI_PROTOCOL_11N;
+        esp_err_t pe;
+        pe = esp_wifi_set_protocol(WIFI_IF_AP, proto_bits);
+        if (pe != ESP_OK) {
+            ESP_LOGW(TAG, "AP set_protocol(11B|11G|11N) failed: %s", esp_err_to_name(pe));
+        }
+        pe = esp_wifi_set_protocol(WIFI_IF_STA, proto_bits);
+        if (pe != ESP_OK) {
+            ESP_LOGW(TAG, "STA set_protocol(11B|11G|11N) failed: %s", esp_err_to_name(pe));
+        }
+        pe = esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
+        if (pe != ESP_OK) {
+            ESP_LOGW(TAG, "AP set_bandwidth(HT20) failed: %s", esp_err_to_name(pe));
+        }
+        pe = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+        if (pe != ESP_OK) {
+            ESP_LOGW(TAG, "STA set_bandwidth(HT20) failed: %s", esp_err_to_name(pe));
+        }
+        ESP_LOGI(TAG, "WiFi PHY: 11B|11G|11N HT20, modem-sleep=NONE, txpwr=%d qdBm",
+                 WIFI_TX_POWER_QDBM);
+    }
 
     /* Auto channel selection: scan the band and move the AP (and therefore
      * ESP-NOW) to the quietest non-overlapping channel. Runs on every boot

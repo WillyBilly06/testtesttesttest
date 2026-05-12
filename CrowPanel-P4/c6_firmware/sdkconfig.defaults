@@ -33,9 +33,14 @@ CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_PERF=y
 # 9. ESP-Hosted peer data transfer (for custom SDIO commands)
 CONFIG_ESP_HOSTED_ENABLE_PEER_DATA_TRANSFER=y
 CONFIG_ESP_HOSTED_MAX_CUSTOM_MSG_HANDLERS=16
+# CONFIG_ESP_HOSTED_USE_MEMPOOL is not set
 
 # 10. Disable built-in app_main (we provide our own)
 # CONFIG_ESP_HOSTED_COPROCESSOR_APP_MAIN is not set
 
 # 11. Disable enterprise WiFi (save flash)
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+
+# ECast beacon authentication on C6
+CONFIG_MBEDTLS_CMAC_C=y
+CONFIG_MBEDTLS_CCM_C=y

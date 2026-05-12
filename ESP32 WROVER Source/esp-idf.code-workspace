@@ -1,0 +1,25 @@
+{
+	"folders": [
+		{
+			"path": "../Bluetooth Project - Copy/esp-idf"
+		},
+		{
+			"path": "../ESP32-C6 Sink"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../ESP32-Code"
+		},
+		{
+			"path": "../ESP32-NRF24-Sink"
+		},
+		{
+			"path": "../ESP32-NRF24-Source"
+		},
+		{
+			"path": "../ESP32-NRF24-ADC_1808"
+		}
+	]
+}

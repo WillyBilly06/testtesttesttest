@@ -1,0 +1,2 @@
+source D:/ESP32 WROVER Source/build_cursor/bootloader/gdbinit/symbols
+source D:/ESP32 WROVER Source/build_cursor/bootloader/gdbinit/connect

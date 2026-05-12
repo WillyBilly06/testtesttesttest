@@ -1,0 +1,15 @@
+menu "Room audio source"
+
+config ROOM_AUDIO_ROOM_ID
+    string "Room ID"
+    default "A10-0001"
+    help
+        Room identifier broadcast by ESP-NOW. Use the XXX-XXXX format
+        where each X is alphanumeric (A-Z, a-z, 0-9).
+
+config ROOM_AUDIO_LC3_BITRATE
+    int "LC3 per-channel bitrate (bps)"
+    default 31200
+    range 16000 320000
+
+endmenu

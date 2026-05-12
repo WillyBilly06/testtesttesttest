@@ -270,7 +270,7 @@ static esp_err_t get_ota_target_version(char *version, size_t len)
 }
 
 // Callback for C6 firmware version response
-static void on_fw_ver_response(uint32_t msg_id, const uint8_t *data, size_t len)
+static void on_fw_ver_response(uint32_t msg_id, const uint8_t *data, size_t len, void *ctx)
 {
     if (len >= sizeof(espnow_evt_fw_ver_t)) {
         const espnow_evt_fw_ver_t *resp = (const espnow_evt_fw_ver_t *)data;
@@ -299,7 +299,7 @@ static esp_err_t query_c6_app_version(char *version, size_t ver_len,
     memset(s_c6_app_project, 0, sizeof(s_c6_app_project));
 
     // Register temporary callback for the version response
-    esp_err_t ret = esp_hosted_register_custom_callback(ESPNOW_MSG_EVT_FW_VER, on_fw_ver_response);
+    esp_err_t ret = esp_hosted_register_custom_callback(ESPNOW_MSG_EVT_FW_VER, on_fw_ver_response, NULL);
     if (ret != ESP_OK) {
         vSemaphoreDelete(s_ver_sem);
         s_ver_sem = NULL;
@@ -309,7 +309,7 @@ static esp_err_t query_c6_app_version(char *version, size_t ver_len,
     // Send version query command to C6
     ret = esp_hosted_send_custom_data(ESPNOW_MSG_CMD_GET_FW_VER, NULL, 0);
     if (ret != ESP_OK) {
-        esp_hosted_register_custom_callback(ESPNOW_MSG_EVT_FW_VER, NULL);
+        esp_hosted_register_custom_callback(ESPNOW_MSG_EVT_FW_VER, NULL, NULL);
         vSemaphoreDelete(s_ver_sem);
         s_ver_sem = NULL;
         return ret;
@@ -319,7 +319,7 @@ static esp_err_t query_c6_app_version(char *version, size_t ver_len,
     bool got_response = (xSemaphoreTake(s_ver_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
 
     // Deregister callback
-    esp_hosted_register_custom_callback(ESPNOW_MSG_EVT_FW_VER, NULL);
+    esp_hosted_register_custom_callback(ESPNOW_MSG_EVT_FW_VER, NULL, NULL);
     vSemaphoreDelete(s_ver_sem);
     s_ver_sem = NULL;
 
@@ -455,6 +455,16 @@ esp_err_t ota_slave_flash_if_needed(void)
     ret = esp_partition_read(slave_part, 0, &magic, 1);
     if (ret != ESP_OK || magic != ESP_IMAGE_MAGIC) {
         ESP_LOGW(TAG, "No valid firmware in slave_fw partition (magic=0x%02x)", magic);
+        /* No embedded image to OTA against. If the C6 is up and reporting
+         * a version, trust whatever it is currently running and enable
+         * ESP-NOW. This handles the case where the C6 was flashed via an
+         * external tool (e.g. lboshuizen SDIO OTA) and the embedded image
+         * was not compiled into the P4 binary. */
+        if (c6_app_version[0] != '\0' && strcmp(c6_app_version, "unknown") != 0) {
+            ESP_LOGI(TAG, "C6 running '%s' — no embedded image, trusting current firmware", c6_app_version);
+            s_espnow_supported = true;
+            save_stored_version(c6_app_version);
+        }
         return ESP_OK;
     }
 

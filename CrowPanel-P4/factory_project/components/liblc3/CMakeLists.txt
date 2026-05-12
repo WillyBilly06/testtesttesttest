@@ -7,8 +7,9 @@ idf_component_register(
     INCLUDE_DIRS "include" "src"
 )
 
-# Keep only Bluetooth LC3 feature set (no LC3plus short-frame/HR paths).
+# Enable LC3plus short frames (2.5 ms and 5 ms). Keep HR mode off to
+# avoid the larger high-resolution tables on ESP32-P4.
 target_compile_definitions(${COMPONENT_LIB} PUBLIC
-    LC3_PLUS=0
+    LC3_PLUS=1
     LC3_PLUS_HR=0
 )

@@ -25,6 +25,7 @@
 
 #include "ota_slave.h"
 #include "espnow_sink.h"
+#include "esp_hosted.h"
 
 extern "C" uint8_t is_transport_tx_ready(void);
 
@@ -42,6 +43,7 @@ LV_IMG_DECLARE(theme_bg_topography_1024x600);
 LV_IMG_DECLARE(theme_bg_vista_1024x600);
 
 static TaskHandle_t battery_info_task_handle = NULL;     
+static bool s_battery_monitor_ready = false;
 uint32_t adc_voltage;
 uint32_t bat_voltage;
 uint32_t bat_level;
@@ -53,6 +55,25 @@ static volatile int32_t s_ui_theme_id = DEFAULT_UI_THEME;
 static bool s_home_logo_added = false;
 static bool s_post_ota_c6_delay_required = false;
 static bool s_c6_init_task_started = false;
+static volatile bool s_c6_init_complete = false;
+
+/*
+ * Gate flag for the WiFi-Scan task in components/apps/setting.
+ *
+ * The factory C6 firmware (esp_hosted v2.3.0) has SDIO transport bugs:
+ * concurrent WiFi RPCs (e.g. esp_wifi_init -> Req_GetMACAddress) and
+ * slave-OTA RPCs (Req_OTAWrite) on the same SDIO bus deadlock the
+ * transport, causing OTA write timeouts and a permanent WiFi failure
+ * at ~4 minutes uptime.
+ *
+ * Returning false from this hook keeps wifiScanTask from calling
+ * esp_wifi_init / esp_wifi_start until after the C6 OTA + activation
+ * flow has finished and the C6 has rebooted into the new (fixed) image.
+ */
+extern "C" bool c6_init_wifi_allowed(void)
+{
+    return s_c6_init_complete;
+}
 
 static void start_c6_init_task(void)
 {
@@ -67,31 +88,14 @@ static void start_c6_init_task(void)
     xTaskCreate([](void *) {
         bool sink_ready = false;
 
-        /* Fast path: on normal boots, bring up sink as soon as transport is ready
-         * (non-RPC readiness check) so C6 status/FW can appear earlier in UI.
-         * Skipped when force-flashing — the C6 is assumed broken/unresponsive
-         * and we must keep the custom-data channel idle until the OTA RPCs
-         * complete. */
-#if !CONFIG_OTA_SLAVE_FORCE_FLASH
-        if (!s_post_ota_c6_delay_required) {
-            int wait_ticks = 0;
-            while (!is_transport_tx_ready() && wait_ticks < 120) {
-                vTaskDelay(pdMS_TO_TICKS(100));
-                wait_ticks++;
-            }
-
-            if (is_transport_tx_ready()) {
-                esp_err_t espnow_ret = espnow_sink_init(NULL);
-                if (espnow_ret == ESP_OK) {
-                    sink_ready = true;
-                    espnow_sink_request_status();
-                    espnow_sink_request_fw_version();
-                } else {
-                    ESP_LOGW("c6_init", "Early sink init skipped: %s", esp_err_to_name(espnow_ret));
-                }
-            }
-        }
-#endif
+        /* NOTE: the previous "fast-path" that called espnow_sink_init() and
+         * espnow_sink_request_status() before the OTA flow has been removed.
+         * It fired RPCs into the SDIO custom-data channel before the C6 had
+         * sent its Coprocessor Boot-up event, leaving timed-out async-RPC
+         * state behind. When the C6 later booted up, the host's RPC layer
+         * tried to deliver the failure callback via a stale function
+         * pointer and panic'd at MEPC=0x48 (NULL deref). Wait for the OTA
+         * workflow to finish first. */
 
         if (s_post_ota_c6_delay_required) {
             ESP_LOGW("c6_init", "Waiting 8s for C6 OTA validation window before OTA checks...");
@@ -137,16 +141,24 @@ static void start_c6_init_task(void)
             if (sink_ready) {
                 espnow_sink_request_status();
                 espnow_sink_request_fw_version();
-                /* Boot-time autoscan: continuously scan + discover sources
-                 * and auto-reconnect on drops, without requiring the user
-                 * to open Settings → ESP-NOW and toggle the switch. The
-                 * UI panel can still show the live room list and accept
-                 * join taps; it just no longer owns the radio lifecycle. */
-                espnow_sink_set_autoscan(true);
+                /* NOTE: do NOT auto-start scanning at boot.
+                 * The user controls ESP-NOW via Settings → Assistive
+                 * Listening switch. Toggling it ON brings the C6 radio up
+                 * and starts a scan; the room list is shown for the user
+                 * to pick from. Toggling it OFF tears the radio down and
+                 * stops all ESP-NOW activity. */
             }
         } else {
             ESP_LOGW("c6_init", "ESP-NOW disabled: C6 firmware version mismatch (OTA pending or failed)");
         }
+
+        /* Release the WiFi-Scan task so it can finally call esp_wifi_init.
+         * We do this regardless of OTA outcome — if OTA failed, the C6 is
+         * still on the broken v2.3.0 firmware and WiFi will eventually die,
+         * but at least the user can re-attempt OTA on the next boot
+         * without the SDIO transport already being deadlocked.   */
+        s_c6_init_complete = true;
+        ESP_LOGI("c6_init", "C6 init flow complete — WiFi stack is now allowed to start");
 
         vTaskDelete(NULL);
     }, "c6_init", 8192, NULL, 5, NULL);
@@ -160,7 +172,10 @@ void battery_info_task(void *param)
     while (1)
     {
         Battery_info_t battery_info = {0};
-        stc8_battery_info_get(&battery_info);
+        if (!s_battery_monitor_ready || (stc8_battery_info_get(&battery_info) != ESP_OK)) {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            continue;
+        }
         adc_voltage = battery_info.adc_voltage;
         bat_voltage = battery_info.bat_voltage;
         bat_level   = battery_info.bat_level;
@@ -171,7 +186,7 @@ void battery_info_task(void *param)
         // ESP_LOGI(TAG, "bat_level = %d %%", battery_info.bat_level);
         // ESP_LOGI(TAG, "bat_state = %d", battery_info.bat_state);
         // ESP_LOGI(TAG, "led_state = %d", battery_info.led_state);
-        if (battery_info.bat_voltage <= 3500) {
+        if ((battery_info.bat_voltage > 0) && (battery_info.bat_voltage <= 3500)) {
             ESP_LOGI(TAG, "esp_deep_sleep_start()");
             vTaskDelay(100 / portTICK_PERIOD_MS);
             esp_deep_sleep_start();
@@ -308,7 +323,7 @@ static home_theme_palette_t get_home_theme_palette(int32_t theme_id)
             .container_outline_colors = {0x154734, 0x2F6B57, 0x4F775E, 0x7AA087, 0xA9C4B5, 0xD3E2D8},
             .indicator_active_color = 0x154734,
             .indicator_inactive_color = 0x8FA998,
-            .wallpaper = nullptr,
+            .wallpaper = &cp_logo_rev_home,
         };
     }
 }
@@ -334,6 +349,7 @@ static void configure_calpoly_stylesheet(ESP_Brookesia_PhoneStylesheet_t &styles
     stylesheet.home.flags.enable_recents_screen = 1;
 
     stylesheet.home.app_launcher.data.icon.label.text_color = ESP_BROOKESIA_STYLE_COLOR(0x154734);
+    stylesheet.home.app_launcher.data.table.default_num = 1;
     stylesheet.home.app_launcher.data.indicator.spot_active_background_color =
         ESP_BROOKESIA_STYLE_COLOR(palette.indicator_active_color);
     stylesheet.home.app_launcher.data.indicator.spot_inactive_background_color =
@@ -521,6 +537,26 @@ extern "C" void app_main(void)
         ESP_LOGW(TAG, "Post-OTA reboot detected - C6 init task will wait 8s for firmware validation");
     }
 
+    /* Bring up ESP-Hosted SDIO transport explicitly *before* anything else
+     * touches it. Without this, the transport only comes up lazily when
+     * esp_wifi_init() runs (much later), causing:
+     *   - ota_slave_flash_if_needed to time out for 10 s waiting on RPC,
+     *   - any user-side custom-data send to leave a timed-out async-RPC
+     *     entry that crashes the RPC layer when the C6 later replies.
+     * Calling esp_hosted_init/connect early triggers the GPIO32 reset and
+     * waits for the C6 INIT event, so by the time the c6_init task runs the
+     * SDIO link is fully ready. */
+    {
+        int ret = esp_hosted_init();
+        if (ret != 0) {
+            ESP_LOGW(TAG, "esp_hosted_init returned %d (continuing)", ret);
+        }
+        ret = esp_hosted_connect_to_slave();
+        if (ret != 0) {
+            ESP_LOGW(TAG, "esp_hosted_connect_to_slave returned %d (continuing)", ret);
+        }
+    }
+
     s_screen_timeout_s = load_screen_timeout_from_nvs();
     s_ui_theme_id = load_ui_theme_from_nvs();
 
@@ -535,22 +571,24 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "SD card mount successfully");
 #endif
 
-    ESP_ERROR_CHECK(bsp_extra_codec_init());
+    ESP_LOGI(TAG, "Skipping BSP speaker/mic codec init; assistive AUX I2S owns the audio path");
 
-    stc8_i2c_init();
+    s_battery_monitor_ready = (stc8_i2c_init() == ESP_OK);
     Battery_info_t battery_info = {0};
-    stc8_battery_info_get(&battery_info);
+    esp_err_t battery_info_err = s_battery_monitor_ready ? stc8_battery_info_get(&battery_info) : ESP_FAIL;
     ESP_LOGI(TAG, "adc_voltage = %lu mV", battery_info.adc_voltage);
     ESP_LOGI(TAG, "bat_voltage = %lu mV", battery_info.bat_voltage);
     ESP_LOGI(TAG, "bat_level = %d %%", battery_info.bat_level);
     ESP_LOGI(TAG, "bat_state = %d", battery_info.bat_state);
     ESP_LOGI(TAG, "led_state = %d", battery_info.led_state);
-    if (battery_info.bat_voltage <= 3500) {
+    if (battery_info_err != ESP_OK) {
+        ESP_LOGW(TAG, "Battery monitor unavailable; continuing without low-battery sleep guard");
+    } else if ((battery_info.bat_voltage > 0) && (battery_info.bat_voltage <= 3500)) {
         ESP_LOGI(TAG, "esp_deep_sleep_start()");
         vTaskDelay(100 / portTICK_PERIOD_MS);
         esp_deep_sleep_start();
     }
-    xTaskCreate(battery_info_task, "battery_info_task", 4096, NULL, 3, &battery_info_task_handle);
+    xTaskCreatePinnedToCore(battery_info_task, "battery_info_task", 4096, NULL, 3, &battery_info_task_handle, 0);
 
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
@@ -567,13 +605,15 @@ extern "C" void app_main(void)
      * lets the scheduler land LVGL on the same core the audio task is using,
      * causing UI stutters during LC3 decode / blocking I2S writes. */
     cfg.lvgl_port_cfg.task_affinity = 0;
+    cfg.lvgl_port_cfg.timer_period_ms = 10;
+    cfg.lvgl_port_cfg.task_max_sleep_ms = 100;
     bsp_display_start_with_config(&cfg);
     s_display_ready = true;
     start_c6_init_task();
 
     bsp_display_backlight_on();
 
-    xTaskCreate(touch_detect_task, "touch_detect_task", 2048, NULL, 3, &battery_info_task_handle);
+    xTaskCreatePinnedToCore(touch_detect_task, "touch_detect_task", 2048, NULL, 3, NULL, 0);
 
     bsp_display_lock(0);
     elecrow_screen();
@@ -610,10 +650,6 @@ extern "C" void app_main(void)
      * that might show as green/hue artifacts on the DPI panel. */
     lv_obj_invalidate(lv_scr_act());
     lv_refr_now(NULL);
-
-    Calculator *calculator = new Calculator();
-    assert(calculator != nullptr && "Failed to create calculator");
-    assert((s_phone->installApp(calculator) >= 0) && "Failed to begin calculator");
 
     AppSettings *app_settings = new AppSettings();
     assert(app_settings != nullptr && "Failed to create app_settings");

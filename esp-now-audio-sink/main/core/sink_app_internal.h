@@ -27,13 +27,14 @@
 #include "driver/uart.h"
 
 #include "lc3.h"
+#include "../ecast_protocol.h"
 
 extern const char *TAG;
 
 #define SAMPLE_RATE_HZ          48000
 #define CHANNELS               2
-#define LC3_FRAME_US           7500
-#define LC3_BYTES_PER_CH       72
+#define LC3_FRAME_US           ECAST_LC3_FRAME_US
+#define LC3_BYTES_PER_CH       ECAST_LC3_BYTES_PER_CH
 #define SAMPLES_PER_FRAME      ((SAMPLE_RATE_HZ * LC3_FRAME_US) / 1000000)
 
 #define I2S_BYTES_PER_SAMPLE   4
@@ -48,17 +49,17 @@ extern const uint8_t SCAN_CHANNELS[];
 #define SCAN_LISTEN_MS         300
 #define MAX_ROOMS              16
 
-#define RX_SLOTS               18
-#define PREBUFFER_FRAMES       2
+#define RX_SLOTS               24
+#define PREBUFFER_FRAMES       3
 #define TARGET_FILL            2
 #define KEEPALIVE_MS           1000
 
 #define TARGET_FILL_MIN        2
-#define TARGET_FILL_MAX        3
+#define TARGET_FILL_MAX        4
 #define PACKET_WAIT_MS_MIN     2
-#define PACKET_WAIT_MS_MAX     3
+#define PACKET_WAIT_MS_MAX     4
 #define PHASE_DELAY_MIN_US     1200
-#define PHASE_DELAY_MAX_US     2000
+#define PHASE_DELAY_MAX_US     30000
 #define BURST_GUARD_SECONDS    1
 #define BURST_JITTER_US        9000
 #define BURST_PHASE_ERR_US     12000
@@ -68,6 +69,7 @@ extern const uint8_t SCAN_CHANNELS[];
 #define REJOIN_BACKOFF_MS      250
 
 #define PROTO_MAGIC            0xA5
+#define AUDIO_FLAG_ECAST       0x01
 
 typedef enum {
     MSG_BEACON     = 0x01,
@@ -126,6 +128,17 @@ typedef struct {
     uint8_t  mac[6];
     int8_t   rssi;
     uint32_t stream_id;
+    bool     ecast;
+    uint64_t broadcast_id;
+    uint16_t pres_delay_us;
+    bool     is_encrypted;
+    bool     session_key_valid;
+    uint8_t  enc_iv[8];
+    uint8_t  key_diversifier[8];
+    uint8_t  session_key[16];
+    int32_t  clock_offset_us;
+    uint32_t clock_sync_count;
+    char     name[24];
 } room_info_t;
 
 typedef struct {
@@ -141,6 +154,8 @@ extern uint8_t  sel_mac[6];
 extern uint32_t sel_room;
 extern uint8_t  sel_channel;
 extern uint32_t sel_stream_id;
+extern volatile bool selected_is_ecast;
+extern volatile uint16_t selected_pres_delay_us;
 extern volatile bool selected;
 
 extern rx_slot_t rx_slots[RX_SLOTS];
@@ -177,8 +192,12 @@ extern i2s_chan_handle_t i2s_tx;
 #define UART_BUF_SIZE         256
 
 void add_or_update_room(const uint8_t mac[6], const beacon_msg_t *b, int8_t rssi);
+void add_or_update_ecast_room(const uint8_t mac[6], const ecast_beacon_payload_t *b, int8_t rssi,
+                              const uint8_t session_key[16], bool session_key_valid,
+                              int32_t beacon_clock_offset_us);
 int uart_read_line(char *buf, int max_len);
 void flush_full_queue(void);
+bool queue_rx_audio(const audio_msg_t *msg, int len);
 int32_t iabs32(int32_t v);
 
 void wifi_init_espnow(void);

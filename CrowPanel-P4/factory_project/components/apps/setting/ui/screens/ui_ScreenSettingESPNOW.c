@@ -12,10 +12,10 @@ void ui_ScreenSettingESPNOW_screen_init(void)
 
     // Enable/Disable switch panel — same styling as other settings items
     ui_PanelScreenSettingESPNOWSwitch = lv_obj_create(ui_ScreenSettingESPNOW);
-    lv_obj_set_height(ui_PanelScreenSettingESPNOWSwitch, 70);
+    lv_obj_set_height(ui_PanelScreenSettingESPNOWSwitch, 83);
     lv_obj_set_width(ui_PanelScreenSettingESPNOWSwitch, lv_pct(90));
-    lv_obj_set_x(ui_PanelScreenSettingESPNOWSwitch, 23);
-    lv_obj_set_y(ui_PanelScreenSettingESPNOWSwitch, 80);
+    lv_obj_set_x(ui_PanelScreenSettingESPNOWSwitch, 43);
+    lv_obj_set_y(ui_PanelScreenSettingESPNOWSwitch, 77);
     lv_obj_clear_flag(ui_PanelScreenSettingESPNOWSwitch, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(ui_PanelScreenSettingESPNOWSwitch, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_color(ui_PanelScreenSettingESPNOWSwitch, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -31,22 +31,22 @@ void ui_ScreenSettingESPNOW_screen_init(void)
     lv_img_set_src(ui_ImagePanelScreenSettingESPNOWSwitch, &ui_img_sound_png);
     lv_obj_set_width(ui_ImagePanelScreenSettingESPNOWSwitch, LV_SIZE_CONTENT);
     lv_obj_set_height(ui_ImagePanelScreenSettingESPNOWSwitch, LV_SIZE_CONTENT);
-    lv_obj_set_y(ui_ImagePanelScreenSettingESPNOWSwitch, 2);
-    lv_obj_set_x(ui_ImagePanelScreenSettingESPNOWSwitch, lv_pct(-48));
-    lv_obj_set_align(ui_ImagePanelScreenSettingESPNOWSwitch, LV_ALIGN_CENTER);
+    lv_obj_set_y(ui_ImagePanelScreenSettingESPNOWSwitch, 3);
+    lv_obj_set_x(ui_ImagePanelScreenSettingESPNOWSwitch, lv_pct(1));
+    lv_obj_set_align(ui_ImagePanelScreenSettingESPNOWSwitch, LV_ALIGN_LEFT_MID);
     lv_obj_add_flag(ui_ImagePanelScreenSettingESPNOWSwitch, LV_OBJ_FLAG_ADV_HITTEST);
     lv_obj_clear_flag(ui_ImagePanelScreenSettingESPNOWSwitch, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
     // Label — positioned same as other items (x = -183)
     ui_LabelPanelScreenSettingESPNOWSwitch = lv_label_create(ui_PanelScreenSettingESPNOWSwitch);
-    lv_obj_set_width(ui_LabelPanelScreenSettingESPNOWSwitch, 430);
+    lv_obj_set_width(ui_LabelPanelScreenSettingESPNOWSwitch, LV_SIZE_CONTENT);
     lv_obj_set_height(ui_LabelPanelScreenSettingESPNOWSwitch, LV_SIZE_CONTENT);
-    lv_obj_set_x(ui_LabelPanelScreenSettingESPNOWSwitch, 68);
-    lv_obj_set_y(ui_LabelPanelScreenSettingESPNOWSwitch, 1);
+    lv_obj_set_x(ui_LabelPanelScreenSettingESPNOWSwitch, lv_pct(10));
+    lv_obj_set_y(ui_LabelPanelScreenSettingESPNOWSwitch, 0);
     lv_obj_set_align(ui_LabelPanelScreenSettingESPNOWSwitch, LV_ALIGN_LEFT_MID);
     lv_label_set_text(ui_LabelPanelScreenSettingESPNOWSwitch, "Assistive Listening");
     lv_obj_set_style_text_align(ui_LabelPanelScreenSettingESPNOWSwitch, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_font(ui_LabelPanelScreenSettingESPNOWSwitch, &lv_font_montserrat_30, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui_LabelPanelScreenSettingESPNOWSwitch, &lv_font_montserrat_32, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(ui_LabelPanelScreenSettingESPNOWSwitch, LV_OBJ_FLAG_CLICKABLE);
 
     // Enable switch — right side matching other items
@@ -54,8 +54,8 @@ void ui_ScreenSettingESPNOW_screen_init(void)
     lv_obj_set_width(ui_SwitchPanelScreenSettingESPNOWSwitch, 96);
     lv_obj_set_height(ui_SwitchPanelScreenSettingESPNOWSwitch, 52);
     lv_obj_set_y(ui_SwitchPanelScreenSettingESPNOWSwitch, 0);
-    lv_obj_set_x(ui_SwitchPanelScreenSettingESPNOWSwitch, lv_pct(44));
-    lv_obj_set_align(ui_SwitchPanelScreenSettingESPNOWSwitch, LV_ALIGN_CENTER);
+    lv_obj_set_x(ui_SwitchPanelScreenSettingESPNOWSwitch, -28);
+    lv_obj_set_align(ui_SwitchPanelScreenSettingESPNOWSwitch, LV_ALIGN_RIGHT_MID);
     lv_obj_set_style_bg_color(ui_SwitchPanelScreenSettingESPNOWSwitch, lv_color_hex(0xD9E6DB), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_SwitchPanelScreenSettingESPNOWSwitch, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(ui_SwitchPanelScreenSettingESPNOWSwitch, lv_color_hex(0x2E7D32), LV_PART_INDICATOR | LV_STATE_CHECKED);
@@ -73,7 +73,7 @@ void ui_ScreenSettingESPNOW_screen_init(void)
     lv_obj_set_width(ui_LabelScreenSettingESPNOWStatus, lv_pct(80));
     lv_obj_set_height(ui_LabelScreenSettingESPNOWStatus, LV_SIZE_CONTENT);
     lv_obj_set_x(ui_LabelScreenSettingESPNOWStatus, 50);
-    lv_obj_set_y(ui_LabelScreenSettingESPNOWStatus, 175);
+    lv_obj_set_y(ui_LabelScreenSettingESPNOWStatus, 178);
     lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Assistive Listening disabled");
     lv_obj_set_style_text_font(ui_LabelScreenSettingESPNOWStatus, &lv_font_montserrat_24, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(ui_LabelScreenSettingESPNOWStatus, lv_color_hex(0x666666), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -81,9 +81,9 @@ void ui_ScreenSettingESPNOW_screen_init(void)
     // Room list panel (scrollable)
     ui_PanelScreenSettingESPNOWList = lv_obj_create(ui_ScreenSettingESPNOW);
     lv_obj_set_width(ui_PanelScreenSettingESPNOWList, lv_pct(88));
-    lv_obj_set_height(ui_PanelScreenSettingESPNOWList, 330);
-    lv_obj_set_x(ui_PanelScreenSettingESPNOWList, 25);
-    lv_obj_set_y(ui_PanelScreenSettingESPNOWList, 210);
+    lv_obj_set_height(ui_PanelScreenSettingESPNOWList, 300);
+    lv_obj_set_x(ui_PanelScreenSettingESPNOWList, 40);
+    lv_obj_set_y(ui_PanelScreenSettingESPNOWList, 220);
     lv_obj_set_flex_flow(ui_PanelScreenSettingESPNOWList, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(ui_PanelScreenSettingESPNOWList, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_add_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
@@ -93,9 +93,9 @@ void ui_ScreenSettingESPNOW_screen_init(void)
     // Stats panel (shown when connected)
     ui_PanelScreenSettingESPNOWStats = lv_obj_create(ui_ScreenSettingESPNOW);
     lv_obj_set_width(ui_PanelScreenSettingESPNOWStats, lv_pct(88));
-    lv_obj_set_height(ui_PanelScreenSettingESPNOWStats, 150);
-    lv_obj_set_x(ui_PanelScreenSettingESPNOWStats, 25);
-    lv_obj_set_y(ui_PanelScreenSettingESPNOWStats, 370);
+    lv_obj_set_height(ui_PanelScreenSettingESPNOWStats, 300);
+    lv_obj_set_x(ui_PanelScreenSettingESPNOWStats, 40);
+    lv_obj_set_y(ui_PanelScreenSettingESPNOWStats, 220);
     lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_PanelScreenSettingESPNOWStats, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -123,8 +123,8 @@ void ui_ScreenSettingESPNOW_screen_init(void)
 
     // Disconnect button (shown when connected)
     ui_ButtonScreenSettingESPNOWDisconnect = lv_btn_create(ui_PanelScreenSettingESPNOWStats);
-    lv_obj_set_width(ui_ButtonScreenSettingESPNOWDisconnect, 150);
-    lv_obj_set_height(ui_ButtonScreenSettingESPNOWDisconnect, 45);
+    lv_obj_set_width(ui_ButtonScreenSettingESPNOWDisconnect, 190);
+    lv_obj_set_height(ui_ButtonScreenSettingESPNOWDisconnect, 52);
     lv_obj_set_x(ui_ButtonScreenSettingESPNOWDisconnect, -30);
     lv_obj_set_y(ui_ButtonScreenSettingESPNOWDisconnect, -25);
     lv_obj_set_align(ui_ButtonScreenSettingESPNOWDisconnect, LV_ALIGN_BOTTOM_RIGHT);

@@ -202,7 +202,7 @@ lv_obj_set_height( ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, LV_SIZE_
 lv_obj_set_x( ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, -236 );
 lv_obj_set_y( ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, 2 );
 lv_obj_set_align( ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, LV_ALIGN_CENTER );
-lv_label_set_text(ui_LabelPanelPanelScreenSettingAboutSoftwareVersion,"Software Version");
+lv_label_set_text(ui_LabelPanelPanelScreenSettingAboutSoftwareVersion,"Firmware Version");
 lv_obj_set_style_text_font(ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, &lv_font_montserrat_24, LV_PART_MAIN| LV_STATE_DEFAULT);
 
 ui_LabelPanelPanelScreenSettingAbout5 = lv_label_create(ui_PanelPanelScreenSettingAbout4);

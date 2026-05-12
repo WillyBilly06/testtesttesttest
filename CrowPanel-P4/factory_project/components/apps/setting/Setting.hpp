@@ -80,6 +80,9 @@ private:
     void hideDeviceNameEditor(void);
     void applyThemeToSettingScreens(void);
     void updateThemePreviewSelection(void);
+    void updateEspnowUiState(void);
+    void showEspnowScanningUi(void);
+    void showEspnowConnectedUi(const char *room_name);
     void restoreBuiltInIconSources(void);
     void resetUiHandles(void);
     bool isUiAlive(void) const;
@@ -157,6 +160,10 @@ private:
     lv_timer_t *_wifi_scan_dots_timer;
     lv_obj_t *_timezone_panel;
     lv_obj_t *_timezone_label;
+    lv_obj_t *_espnow_volume_slider;
+    lv_obj_t *_espnow_output_dropdown;
+    lv_obj_t *_espnow_volume_value_label;
+    lv_obj_t *_espnow_selected_room_label;
     std::array<lv_obj_t *, APP_THEME_MAX> _theme_preview_cards;
     std::array<lv_obj_t *, APP_THEME_MAX> _theme_preview_badges;
     std::array<lv_obj_t *, UI_MAX_INDEX> _screen_list;
@@ -168,4 +175,5 @@ private:
     // ESP-NOW Audio
     TaskHandle_t _espnow_scan_task = nullptr;
     TaskHandle_t _espnow_stats_task = nullptr;
+    int _espnow_selected_room = -1;
 };

@@ -8553,8 +8553,8 @@
                 "children": [],
                 "depends_on": null,
                 "help": "Mempool will help to alloc buffer without going to heap for every memory allocation or free",
-                "id": "ESP_CACHE_MALLOC",
-                "name": "ESP_CACHE_MALLOC",
+                "id": "ESP_HOSTED_USE_MEMPOOL",
+                "name": "ESP_HOSTED_USE_MEMPOOL",
                 "range": null,
                 "title": "Enable Mempool",
                 "type": "bool"
@@ -9248,7 +9248,7 @@
             {
                 "children": [],
                 "depends_on": null,
-                "help": "Enable RPC handlers for external coexistence configuration from the host.\nRequires CONFIG_EXTERNAL_COEX_ENABLE (Component config -> Wi-Fi -> External coexistence).",
+                "help": "Enable RPC handlers for external coexistence configuration from the host.\nRequires CONFIG_ESP_COEX_EXTERNAL_COEXIST_ENABLE\n(Component config \u2192 Wireless Coexistence \u2192 External Coexistence).\n\nOn chips with SOC_EXTERNAL_COEX_ADVANCE, external coexistence works\nalongside Bluetooth. On other chips, BT controller must be disabled.",
                 "id": "ESP_HOSTED_CP_EXT_COEX",
                 "name": "ESP_HOSTED_CP_EXT_COEX",
                 "range": null,

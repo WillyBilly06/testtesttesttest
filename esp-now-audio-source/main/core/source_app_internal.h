@@ -39,14 +39,15 @@ extern const char *TAG;
 
 #define SAMPLE_RATE_HZ          48000
 #define CHANNELS               2
-#define LC3_FRAME_US           7500
-#define LC3_BYTES_PER_CH       72
+#define LC3_FRAME_US           5000
+#define LC3_BYTES_PER_CH       48
 #define SAMPLES_PER_FRAME      ((SAMPLE_RATE_HZ * LC3_FRAME_US) / 1000000)
 
 #define PCM24_MAX              8388607
 #define PCM24_MIN             -8388608
 
-/* I2S pins removed – MP3 playback from flash, no ADC hardware needed */
+/* PCM1808 I2S-in pins are defined locally in audio/source_audio.c:
+ *   MCLK=GPIO0  BCLK=GPIO27  LRCK=GPIO25  DIN=GPIO26  (ESP32 = master) */
 
 #define ROOM_BUILDING          52    /* 000..999 */
 #define ROOM_NUMBER            127   /* 000..999 */
@@ -90,8 +91,8 @@ extern const char *TAG;
 
 #ifndef CONFIG_AUDIO_TX_TOKENS
 /* 48 tokens (vs 16) absorbs transient espnow_send_cb stalls that otherwise
- * caused ~700 ms audio dropouts. At 133 pps the pool only ever has <2
- * in-flight on a healthy link; 48 gives ~360 ms of headroom before any
+ * caused long audio dropouts. At 200 pps the pool only ever has <2
+ * in-flight on a healthy link; 48 gives ~240 ms of headroom before any
  * backpressure kicks in. */
 #define CONFIG_AUDIO_TX_TOKENS 48
 #endif
@@ -111,8 +112,8 @@ extern const char *TAG;
 
 #define AUDIO_QUEUE_LEN         CONFIG_AUDIO_QUEUE_LEN
 #define AUDIO_TX_TOKENS         CONFIG_AUDIO_TX_TOKENS
-/* 10 ms wait (vs 2 ms) lets us ride out short WiFi callback stalls without
- * dropping a frame. Frame period is 7.5 ms so we still cap worst-case latency. */
+/* 10 ms wait lets legacy unicast ride out short WiFi callback stalls.
+ * The ECast broadcast path is separately paced and non-blocking. */
 #define AUDIO_TX_TOKEN_WAIT_MS  10
 
 /* Audio TX uses ESP-NOW UNICAST fanout (one esp_now_send per joined sink).
@@ -130,28 +131,28 @@ extern const char *TAG;
 #define UDP_PACE_DIV_NORMAL     2
 #define UDP_PACE_DIV_STRONG     4
 
-#define ESPNOW_PHY_MODE         WIFI_PHY_MODE_11G
-#ifndef WIFI_PHY_RATE_54M
-#define WIFI_PHY_RATE_54M WIFI_PHY_RATE_24M
-#endif
-#define ESPNOW_HAS_RATE_54M (WIFI_PHY_RATE_54M != WIFI_PHY_RATE_24M)
-#if defined(CONFIG_ESPNOW_RATE_6M)
-#define ESPNOW_PHY_RATE         WIFI_PHY_RATE_6M
-#elif defined(CONFIG_ESPNOW_RATE_12M)
-#define ESPNOW_PHY_RATE         WIFI_PHY_RATE_12M
-#elif defined(CONFIG_ESPNOW_RATE_24M)
-#define ESPNOW_PHY_RATE         WIFI_PHY_RATE_24M
-#elif defined(CONFIG_ESPNOW_RATE_54M)
-#define ESPNOW_PHY_RATE         WIFI_PHY_RATE_54M
-#else
-#define ESPNOW_PHY_RATE         WIFI_PHY_RATE_54M
-#endif
+/* ── ESP-NOW PHY: 802.11n HT20, fixed MCS1 LGI ────────────────────────
+ *
+ * MCS1 HT20 long-GI = 13 Mbps PHY rate. Compared to legacy 24 Mbps OFDM:
+ *   - ~3 dB more sensitivity → roughly 1.4× free-space range.
+ *   - Same 20 MHz channel width, so no co-existence change with the
+ *     STA's upstream AP.
+ *   - With RTN=3 + AES-CCM payload (117 B on-air), each copy uses ~170 us
+ *     of air time, and the 3-copy burst fits inside the 5 ms LC3plus slot.
+ *
+ * The whole-band rate fall-back logic that lived in apply_espnow_rate_all_peers
+ * is intentionally a no-op now — we want a *fixed* PHY for predictable
+ * range/latency. */
+#define ESPNOW_PHY_MODE         WIFI_PHY_MODE_HT20
+#define ESPNOW_PHY_RATE         WIFI_PHY_RATE_MCS1_LGI
+#define ESPNOW_PHY_RATE_MAX     WIFI_PHY_RATE_MCS1_LGI
 
-#if ESPNOW_HAS_RATE_54M
-#define ESPNOW_PHY_RATE_MAX     WIFI_PHY_RATE_54M
-#else
-#define ESPNOW_PHY_RATE_MAX     WIFI_PHY_RATE_24M
+/* Legacy alias kept so any pre-existing rate-step code keeps compiling.
+ * On a fixed-rate config every step "stays" at MCS1 LGI. */
+#ifndef WIFI_PHY_RATE_54M
+#define WIFI_PHY_RATE_54M WIFI_PHY_RATE_MCS1_LGI
 #endif
+#define ESPNOW_HAS_RATE_54M     0
 
 #define UDP_PORT               5000
 #define MAX_UDP_CLIENTS        10
@@ -286,6 +287,7 @@ void espnow_recv_cb(const esp_now_recv_info_t *ri, const uint8_t *data, int len)
 
 void beacon_task(void *arg);
 void audio_capture_encode_task(void *arg);
+void audio_emit_task(void *arg);
 void audio_send_task(void *arg);
 void udp_audio_send_task(void *arg);
 void udp_server_task(void *arg);

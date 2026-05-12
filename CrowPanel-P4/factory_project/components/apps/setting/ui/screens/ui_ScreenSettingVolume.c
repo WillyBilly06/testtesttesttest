@@ -12,10 +12,10 @@ lv_obj_set_style_bg_color(ui_ScreenSettingVolume, lv_color_hex(0xE5F3FF), LV_PAR
 lv_obj_set_style_bg_opa(ui_ScreenSettingVolume, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
 
 ui_PanelScreenSettingVolumeSwitch = lv_obj_create(ui_ScreenSettingVolume);
-lv_obj_set_height( ui_PanelScreenSettingVolumeSwitch, 83);
+lv_obj_set_height( ui_PanelScreenSettingVolumeSwitch, 70);
 lv_obj_set_width( ui_PanelScreenSettingVolumeSwitch, lv_pct(90));
-lv_obj_set_x( ui_PanelScreenSettingVolumeSwitch, 43 );
-lv_obj_set_y( ui_PanelScreenSettingVolumeSwitch, 77 );
+lv_obj_set_x( ui_PanelScreenSettingVolumeSwitch, 40 );
+lv_obj_set_y( ui_PanelScreenSettingVolumeSwitch, 62 );
 lv_obj_clear_flag( ui_PanelScreenSettingVolumeSwitch, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
 lv_obj_set_style_radius(ui_PanelScreenSettingVolumeSwitch, 20, LV_PART_MAIN| LV_STATE_DEFAULT);
 

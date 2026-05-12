@@ -1,12 +1,12 @@
 # Main component for C6 firmware
 # Merges ESP-Hosted slave sources with our ESP-NOW sink code
 
-set(HOSTED_SLAVE_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/../../factory_project/managed_components/espressif__esp_hosted/slave/main")
+set(HOSTED_SLAVE_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/../../factory_project/components/espressif__esp_hosted/slave/main")
 
 if(IS_DIRECTORY "${HOSTED_SLAVE_MAIN}/common")
     set(common_dir "${HOSTED_SLAVE_MAIN}/common")
 else()
-    set(common_dir "${CMAKE_CURRENT_SOURCE_DIR}/../../factory_project/managed_components/espressif__esp_hosted/common")
+    set(common_dir "${CMAKE_CURRENT_SOURCE_DIR}/../../factory_project/components/espressif__esp_hosted/common")
 endif()
 
 # ── ESP-Hosted slave sources ──
@@ -15,9 +15,7 @@ set(COMPONENT_SRCS
     "${common_dir}/utils/esp_hosted_cli.c"
     "${HOSTED_SLAVE_MAIN}/protocomm_pserial.c"
     "${HOSTED_SLAVE_MAIN}/esp_hosted_coprocessor.c"
-    "${HOSTED_SLAVE_MAIN}/mempool.c"
     "${HOSTED_SLAVE_MAIN}/stats.c"
-    "${HOSTED_SLAVE_MAIN}/mempool_ll.c"
     "${HOSTED_SLAVE_MAIN}/host_power_save.c"
     "${HOSTED_SLAVE_MAIN}/slave_light_sleep.c"
     "${HOSTED_SLAVE_MAIN}/nw_split_router.c"
@@ -26,6 +24,14 @@ set(COMPONENT_SRCS
     "${HOSTED_SLAVE_MAIN}/slave_ext_coex.c"
     "${HOSTED_SLAVE_MAIN}/slave_control.c"
 )
+
+if(CONFIG_ESP_HOSTED_USE_MEMPOOL)
+    list(APPEND COMPONENT_SRCS
+        "${HOSTED_SLAVE_MAIN}/slave_util.c"
+        "${common_dir}/mempool/mempool.c"
+        "${common_dir}/mempool/mempool_ll.c"
+    )
+endif()
 
 if(CONFIG_SOC_BT_SUPPORTED)
     list(APPEND COMPONENT_SRCS "${HOSTED_SLAVE_MAIN}/slave_bt.c")
@@ -67,11 +73,11 @@ endif()
 list(APPEND COMPONENT_SRCS
     "app_main.c"
     "espnow_bridge_handler.c"
-    "ecast_crypto.c"
 )
 
 set(COMPONENT_ADD_INCLUDEDIRS
     "."
+    "${common_dir}/mempool/include"
     "${HOSTED_SLAVE_MAIN}"
     "${common_dir}"
     "${common_dir}/log"

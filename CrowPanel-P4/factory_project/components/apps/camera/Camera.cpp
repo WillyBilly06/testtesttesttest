@@ -110,7 +110,7 @@ bool Camera::run(void)
     hum_detect = get_humanface_detect();
     assert(hum_detect != NULL);
 
-    xTaskCreatePinnedToCore((TaskFunction_t)camera_dectect_task, "Camera Detect", 1024 * 8, this, 5, &_detect_task_handle, 1);
+    xTaskCreatePinnedToCore((TaskFunction_t)camera_dectect_task, "Camera Detect", 1024 * 8, this, 5, &_detect_task_handle, 0);
 
     xEventGroupSetBits(camera_event_group, CAMERA_EVENT_TASK_RUN);
     xEventGroupClearBits(camera_event_group, CAMERA_EVENT_DELETE);

@@ -37,6 +37,20 @@ static inline int32_t sat24(int32_t v) {
     return v;
 }
 
+static void wait_audio_phase_delay(int32_t delay_us) {
+    if (delay_us <= 0) return;
+    if (delay_us > PHASE_DELAY_MAX_US) delay_us = PHASE_DELAY_MAX_US;
+
+    while (delay_us > 2000) {
+        int32_t sleep_us = delay_us - 1000;
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)(sleep_us / 1000)));
+        delay_us = delay_us - sleep_us;
+    }
+    if (delay_us > 0) {
+        esp_rom_delay_us((uint32_t)delay_us);
+    }
+}
+
 static void pcm24_to_i2s32(const int32_t *pcm_s24, int32_t *i2s_out) {
     for (int i = 0; i < SAMPLES_PER_FRAME; i++) {
         int base = i * CHANNELS;
@@ -112,6 +126,8 @@ void playback_task(void *arg) {
             playout_err_us = 0;
             capture_clock_offset_us = 0;
             clock_sync_count = 0;
+            selected_is_ecast = false;
+            selected_pres_delay_us = ECAST_PRES_DELAY_US;
             memset(&held, 0, sizeof(held));
             memset(pcm_s24, 0, sizeof(pcm_s24));
             memset(i2s_out, 0, sizeof(i2s_out));
@@ -155,7 +171,9 @@ void playback_task(void *arg) {
             ESP_LOGI(TAG, "Playback start (prebuffer=%d)", PREBUFFER_FRAMES);
         }
 
-        /* No-drop policy: never trim queued audio frames intentionally. */
+        /* The receive callback bounds latency by dropping the oldest queued
+         * frame only when the queue is completely full. Playback consumes in
+         * order here so normal jitter is absorbed instead of churned. */
 
         bool have_pkt = false;
         audio_msg_t m = {0};
@@ -177,6 +195,8 @@ void playback_task(void *arg) {
         }
 
         bool ok = false;
+
+        bool pkt_ecast = have_pkt && ((m.flags & AUDIO_FLAG_ECAST) != 0);
 
         if (have_pkt && m.h.magic == PROTO_MAGIC && m.h.type == MSG_AUDIO && m.h.room_code == sel_room) {
             uint32_t pkt_stream_id = m.src_t_us;
@@ -278,7 +298,9 @@ void playback_task(void *arg) {
 
         if (ok && have_pkt) {
             int32_t now_us = (int32_t)esp_timer_get_time();
-            int32_t target_delay_us = (int32_t)adaptive_target_fill * LC3_FRAME_US;
+            int32_t target_delay_us = pkt_ecast
+                ? (int32_t)selected_pres_delay_us
+                : (int32_t)adaptive_target_fill * LC3_FRAME_US;
             int32_t due_us = (int32_t)m.capture_us + clock_offset_us + target_delay_us;
             int32_t err_us = now_us - due_us;
 
@@ -288,7 +310,8 @@ void playback_task(void *arg) {
                 playout_err_us += (err_us - playout_err_us) / 8;
             }
 
-            int32_t lat_now_us = now_us - ((int32_t)m.capture_us + capture_clock_offset_us);
+            int32_t pkt_clock_offset_us = pkt_ecast ? clock_offset_us : capture_clock_offset_us;
+            int32_t lat_now_us = now_us - ((int32_t)m.capture_us + pkt_clock_offset_us);
             if (lat_now_us < 0) lat_now_us = 0;
             if (lat_now_us > 500000) lat_now_us = 500000;
             latency_raw_us = lat_now_us;
@@ -300,8 +323,7 @@ void playback_task(void *arg) {
 
             if (err_us < -PHASE_DELAY_MIN_US) {
                 int32_t delay_us = -err_us;
-                if (delay_us > PHASE_DELAY_MAX_US) delay_us = PHASE_DELAY_MAX_US;
-                esp_rom_delay_us((uint32_t)delay_us);
+                wait_audio_phase_delay(delay_us);
             }
 
             if (iabs32(err_us) >= BURST_PHASE_ERR_US) {

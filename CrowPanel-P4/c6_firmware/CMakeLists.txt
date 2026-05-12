@@ -5,7 +5,7 @@
 #
 cmake_minimum_required(VERSION 3.16)
 
-set(HOSTED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../factory_project/managed_components/espressif__esp_hosted")
+set(HOSTED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../factory_project/components/espressif__esp_hosted")
 set(HOSTED_SLAVE_DIR "${HOSTED_DIR}/slave")
 
 # Add the wrap flag for esp_wifi_init (required by ESP-Hosted slave)
@@ -21,10 +21,10 @@ if(PROJECT_VERSION_MATCH)
 endif()
 
 # Bump version above hosted base to force OTA update when C6 code changes
-set(PROJECT_VER "4.0.6")
+set(PROJECT_VER "4.0.25")
 message(STATUS "C6 firmware version (overridden): ${PROJECT_VER}")
 
-# No extra component directories needed - C6 forwards raw LC3 without decoding
+# No extra component directories needed - C6 verifies rooms and reports nRF config
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 list(APPEND EXCLUDE_COMPONENTS lwip esp_netif)

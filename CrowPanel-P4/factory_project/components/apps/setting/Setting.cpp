@@ -428,7 +428,7 @@ void apply_slider_style(lv_obj_t *slider)
     lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_KNOB | LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(slider, lv_color_hex(kCalPolyGreenLight), LV_PART_KNOB | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(slider, 3, LV_PART_KNOB | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_all(slider, 12, LV_PART_KNOB | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(slider, 16, LV_PART_KNOB | LV_STATE_DEFAULT);
 }
 
 void apply_dropdown_style(lv_obj_t *dropdown)
@@ -531,6 +531,12 @@ bool loadWifiCredential(const char *ssid, char *password_out, size_t max_len)
 
 static const char TAG[] = "EUI_Setting";
 
+/* Implemented in main/main.cpp.
+ * Returns false until the C6 OTA + activation flow has finished, so the
+ * WiFi-Scan task does not race RPCs against an in-flight slave OTA on the
+ * factory v2.3.0 SDIO transport (which deadlocks the bus). */
+extern "C" bool c6_init_wifi_allowed(void);
+
 static void formatEspnowRoomCode(uint32_t room_code, char *out, size_t out_len)
 {
     uint16_t building = 0;
@@ -544,6 +550,18 @@ static void formatEspnowRoomCode(uint32_t room_code, char *out, size_t out_len)
         snprintf(out, out_len, "%03u-%03u%c", building, room, (char)('A' + suffix - 1));
     } else {
         snprintf(out, out_len, "%03u-%03u?", building, room);
+    }
+}
+
+static void formatEspnowRoomName(const espnow_room_info_t &room, char *out, size_t out_len)
+{
+    if ((out == nullptr) || (out_len == 0)) {
+        return;
+    }
+    if (room.name[0] != '\0') {
+        snprintf(out, out_len, "%.*s", (int)(sizeof(room.name) - 1), room.name);
+    } else {
+        formatEspnowRoomCode(room.room_code, out, out_len);
     }
 }
 
@@ -651,6 +669,10 @@ AppSettings::AppSettings():
     _hidden_network_keyboard(nullptr),
     _hidden_network_connect_btn(nullptr),
     _hidden_network_cancel_btn(nullptr),
+    _espnow_volume_slider(nullptr),
+    _espnow_output_dropdown(nullptr),
+    _espnow_volume_value_label(nullptr),
+    _espnow_selected_room_label(nullptr),
     _theme_preview_cards({nullptr}),
     _theme_preview_badges({nullptr}),
     _screen_list({nullptr}),
@@ -685,6 +707,10 @@ void AppSettings::resetUiHandles(void)
     _device_name_editor_overlay = nullptr;
     _device_name_editor_textarea = nullptr;
     _device_name_editor_keyboard = nullptr;
+    _espnow_volume_slider = nullptr;
+    _espnow_output_dropdown = nullptr;
+    _espnow_volume_value_label = nullptr;
+    _espnow_selected_room_label = nullptr;
     _theme_preview_cards.fill(nullptr);
     _theme_preview_badges.fill(nullptr);
     _screen_list.fill(nullptr);
@@ -833,7 +859,7 @@ bool AppSettings::init(void)
     _nvs_param_map[NVS_KEY_BLE_ENABLE] = false;
     _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = bsp_extra_codec_volume_get();
     _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
-    _nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = AUDIO_OUTPUT_SPEAKER;
+    _nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = AUDIO_OUTPUT_AUX;
     // _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = bsp_display_brightness_get();
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = max(min((int)_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], SCREEN_BRIGHTNESS_MAX), SCREEN_BRIGHTNESS_MIN);
@@ -843,14 +869,12 @@ bool AppSettings::init(void)
     loadNvsStringParam(NVS_KEY_DEVICE_NAME, _device_name, DEVICE_NAME_DEFAULT);
     // Update System parameters
     bsp_extra_codec_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME], (int *)&_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
-    const int audio_output = (_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] == AUDIO_OUTPUT_AUX) ? AUDIO_OUTPUT_AUX : AUDIO_OUTPUT_SPEAKER;
-    _nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = audio_output;
-    if (bsp_extra_output_route_set((audio_output == AUDIO_OUTPUT_AUX) ? BSP_EXTRA_AUDIO_OUTPUT_AUX : BSP_EXTRA_AUDIO_OUTPUT_SPEAKER) != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set audio output route, fallback to SPEAKER");
-        _nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = AUDIO_OUTPUT_SPEAKER;
-        setNvsParam(NVS_KEY_AUDIO_OUTPUT, AUDIO_OUTPUT_SPEAKER);
-        bsp_extra_output_route_set(BSP_EXTRA_AUDIO_OUTPUT_SPEAKER);
-    }
+    espnow_sink_set_output_volume(_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    _nvs_param_map[NVS_KEY_AUDIO_OUTPUT] =
+        (_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] == AUDIO_OUTPUT_SPEAKER) ? AUDIO_OUTPUT_SPEAKER : AUDIO_OUTPUT_AUX;
+    bsp_extra_output_route_set((_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] == AUDIO_OUTPUT_AUX)
+        ? BSP_EXTRA_AUDIO_OUTPUT_AUX
+        : BSP_EXTRA_AUDIO_OUTPUT_SPEAKER);
     bsp_display_brightness_set(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
     app_set_screen_timeout_seconds(_nvs_param_map[NVS_KEY_DISPLAY_TIMEOUT]);
 
@@ -1120,7 +1144,7 @@ void AppSettings::extraUiInit(void)
     
     // List
     lv_obj_set_scroll_dir(ui_PanelScreenSettingWiFiList, LV_DIR_VER);
-    lv_obj_set_height(ui_PanelScreenSettingWiFiList, 390);
+    lv_obj_set_height(ui_PanelScreenSettingWiFiList, 280);
     lv_obj_set_width(ui_PanelScreenSettingWiFiList, lv_pct(90));
     lv_obj_align_to(ui_PanelScreenSettingWiFiList, ui_PanelScreenSettingWiFiSwitch, LV_ALIGN_OUT_BOTTOM_MID, 0,
                     16);
@@ -1152,7 +1176,7 @@ void AppSettings::extraUiInit(void)
 
         label_wifi_ssid[i] = lv_label_create(panel_wifi_btn[i]);
         lv_obj_set_align(label_wifi_ssid[i], LV_ALIGN_LEFT_MID);
-        lv_obj_set_width(label_wifi_ssid[i], 560);
+        lv_obj_set_width(label_wifi_ssid[i], 500);
         lv_label_set_long_mode(label_wifi_ssid[i], LV_LABEL_LONG_DOT);
 
         img_img_wifi_lock[i] = lv_img_create(panel_wifi_btn[i]);
@@ -1242,8 +1266,8 @@ void AppSettings::extraUiInit(void)
     // Back button for verification screen - styled with green background like main return buttons
     _btn_back_verification = lv_btn_create(ui_ScreenSettingVerification);
     lv_obj_set_size(_btn_back_verification, 60, 60);
-    lv_obj_set_x(_btn_back_verification, -460);
-    lv_obj_set_y(_btn_back_verification, -240);
+    lv_obj_set_x(_btn_back_verification, -348);
+    lv_obj_set_y(_btn_back_verification, -180);
     lv_obj_set_align(_btn_back_verification, LV_ALIGN_CENTER);
     lv_obj_add_flag(_btn_back_verification, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_clear_flag(_btn_back_verification, LV_OBJ_FLAG_SCROLLABLE);
@@ -1299,8 +1323,11 @@ void AppSettings::extraUiInit(void)
 
     /* Display */
     lv_slider_set_range(ui_SliderPanelScreenSettingLightSwitch1, SCREEN_BRIGHTNESS_MIN, SCREEN_BRIGHTNESS_MAX);
+    lv_obj_set_height(ui_SliderPanelScreenSettingLightSwitch1, 28);
     lv_obj_add_event_cb(ui_SliderPanelScreenSettingLightSwitch1, onSliderPanelLightSwitchValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(ui_SliderPanelScreenSettingLightSwitch1, onSliderPanelLightSwitchValueChangeEventCallback,
+                        LV_EVENT_RELEASED, this);
     lv_obj_clear_flag(ui_PanelScreenSettingLightList, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelScreenSettingLightList, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_MOMENTUM |
                                                      LV_OBJ_FLAG_SCROLL_ELASTIC);
@@ -1430,8 +1457,11 @@ void AppSettings::extraUiInit(void)
 
     /* Audio */
     lv_slider_set_range(ui_SliderPanelScreenSettingVolumeSwitch, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
+    lv_obj_set_height(ui_SliderPanelScreenSettingVolumeSwitch, 28);
     lv_obj_add_event_cb(ui_SliderPanelScreenSettingVolumeSwitch, onSliderPanelVolumeSwitchValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(ui_SliderPanelScreenSettingVolumeSwitch, onSliderPanelVolumeSwitchValueChangeEventCallback,
+                        LV_EVENT_RELEASED, this);
     lv_obj_clear_flag(ui_PanelScreenSettingVolumeList, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelScreenSettingVolumeList, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_MOMENTUM |
                                                    LV_OBJ_FLAG_SCROLL_ELASTIC);
@@ -1479,14 +1509,19 @@ void AppSettings::extraUiInit(void)
     _screen_list[UI_ABOUT_SETTING_INDEX] = ui_ScreenSettingAbout;
     lv_obj_add_event_cb(ui_ScreenSettingAbout, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem1, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem3, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAboutManufacturer, "Manufacturer");
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout1, "Cal Poly");
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout3, mac_str);
-    lv_label_set_text(ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, "Software Version");
+    lv_label_set_text(ui_LabelPanelPanelScreenSettingAboutSoftwareVersion, "Firmware Version");
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout5, get_combined_firmware_version_text());
     lv_obj_add_flag(ui_PanelPanelScreenSettingAbout3, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelPanelScreenSettingAbout5, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelScreenSettingAbout, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_set_scroll_dir(ui_PanelScreenSettingAbout, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(ui_PanelScreenSettingAbout, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_flag(ui_PanelPanelScreenSettingAbout, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ui_PanelPanelScreenSettingAbout, onDeviceNamePanelClickedEventCallback, LV_EVENT_CLICKED, this);
 
@@ -1519,15 +1554,13 @@ void AppSettings::extraUiInit(void)
 
     lv_obj_t *timezone_dropdown = lv_dropdown_create(_timezone_panel);
     lv_dropdown_set_options_static(timezone_dropdown,
-        "PST (UTC-8)\n"
-        "MST (UTC-7)\n"
-        "CST (UTC-6)\n"
-        "EST (UTC-5)\n"
-        "UTC (UTC+0)\n"
-        "GMT (UTC+0)\n"
-        "CET (UTC+1)\n"
-        "CST (UTC+8)\n"
-        "JST (UTC+9)");
+        "Eastern\n"
+        "Central\n"
+        "Mountain\n"
+        "Arizona\n"
+        "Pacific\n"
+        "Alaska\n"
+        "Hawaii");
     lv_obj_set_width(timezone_dropdown, 280);
     lv_obj_set_height(timezone_dropdown, 50);
     lv_obj_set_x(timezone_dropdown, 180);
@@ -1549,7 +1582,7 @@ void AppSettings::extraUiInit(void)
 
     lv_obj_t *device_name_edit_hint = lv_label_create(ui_PanelPanelScreenSettingAbout);
     lv_label_set_text(device_name_edit_hint, LV_SYMBOL_EDIT);
-    lv_obj_align(device_name_edit_hint, LV_ALIGN_RIGHT_MID, 16, 0);
+    lv_obj_align(device_name_edit_hint, LV_ALIGN_RIGHT_MID, 12, 0);
 
     _device_name_editor_overlay = lv_obj_create(ui_ScreenSettingAbout);
     lv_obj_set_size(_device_name_editor_overlay, lv_pct(100), lv_pct(100));
@@ -1579,7 +1612,7 @@ void AppSettings::extraUiInit(void)
 
     _device_name_editor_keyboard = lv_keyboard_create(device_name_dialog);
     lv_obj_set_size(_device_name_editor_keyboard, 812, 280);
-    lv_obj_align(_device_name_editor_keyboard, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_align(_device_name_editor_keyboard, LV_ALIGN_BOTTOM_MID, 0, -12);
     lv_keyboard_set_textarea(_device_name_editor_keyboard, _device_name_editor_textarea);
     lv_obj_add_event_cb(_device_name_editor_keyboard, onDeviceNameKeyboardEventCallback, LV_EVENT_READY, this);
     lv_obj_add_event_cb(_device_name_editor_keyboard, onDeviceNameKeyboardEventCallback, LV_EVENT_CANCEL, this);
@@ -1589,6 +1622,48 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_event_cb(ui_ScreenSettingESPNOW, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
     lv_obj_add_event_cb(ui_SwitchPanelScreenSettingESPNOWSwitch, onESPNOWSwitchValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(ui_ButtonScreenSettingESPNOWDisconnect, onESPNOWDisconnectButtonClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_set_height(ui_PanelScreenSettingESPNOWList, 300);
+    lv_obj_set_y(ui_PanelScreenSettingESPNOWList, 220);
+    lv_obj_set_height(ui_PanelScreenSettingESPNOWStats, 300);
+    lv_obj_set_y(ui_PanelScreenSettingESPNOWStats, 220);
+
+    lv_label_set_text(ui_LabelScreenSettingESPNOWPacketsRx, "Room: --");
+    lv_obj_set_pos(ui_LabelScreenSettingESPNOWPacketsRx, 24, 20);
+    lv_obj_set_style_text_font(ui_LabelScreenSettingESPNOWPacketsRx, &lv_font_montserrat_24, LV_PART_MAIN | LV_STATE_DEFAULT);
+    _espnow_selected_room_label = ui_LabelScreenSettingESPNOWPacketsRx;
+
+    lv_label_set_text(ui_LabelScreenSettingESPNOWPacketsLost, "Volume");
+    lv_obj_set_pos(ui_LabelScreenSettingESPNOWPacketsLost, 24, 86);
+    lv_obj_set_style_text_font(ui_LabelScreenSettingESPNOWPacketsLost, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    _espnow_volume_slider = lv_slider_create(ui_PanelScreenSettingESPNOWStats);
+    lv_obj_set_size(_espnow_volume_slider, 350, 28);
+    lv_obj_set_pos(_espnow_volume_slider, 130, 90);
+    lv_slider_set_range(_espnow_volume_slider, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
+    apply_slider_style(_espnow_volume_slider);
+    lv_obj_add_event_cb(_espnow_volume_slider, onSliderPanelVolumeSwitchValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(_espnow_volume_slider, onSliderPanelVolumeSwitchValueChangeEventCallback, LV_EVENT_RELEASED, this);
+
+    _espnow_volume_value_label = lv_label_create(ui_PanelScreenSettingESPNOWStats);
+    lv_obj_set_width(_espnow_volume_value_label, 90);
+    lv_obj_set_pos(_espnow_volume_value_label, 500, 86);
+    lv_obj_set_style_text_font(_espnow_volume_value_label, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_align(_espnow_volume_value_label, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    lv_label_set_text(ui_LabelScreenSettingESPNOWRSSI, "Output: AUX");
+    lv_obj_set_pos(ui_LabelScreenSettingESPNOWRSSI, 24, 154);
+    lv_obj_set_style_text_font(ui_LabelScreenSettingESPNOWRSSI, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    _espnow_output_dropdown = lv_dropdown_create(ui_PanelScreenSettingESPNOWStats);
+    lv_dropdown_set_options_static(_espnow_output_dropdown, "AUX");
+    lv_obj_set_size(_espnow_output_dropdown, 300, 56);
+    lv_obj_set_pos(_espnow_output_dropdown, 150, 138);
+    apply_dropdown_style(_espnow_output_dropdown);
+    lv_obj_add_event_cb(_espnow_output_dropdown, onDropdownAudioOutputValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_flag(_espnow_output_dropdown, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_set_size(ui_ButtonScreenSettingESPNOWDisconnect, 190, 52);
+    lv_obj_align(ui_ButtonScreenSettingESPNOWDisconnect, LV_ALIGN_BOTTOM_RIGHT, -24, -22);
 
     applyThemeToSettingScreens();
     updateThemePreviewSelection();
@@ -1771,15 +1846,24 @@ void AppSettings::updateUiByNvsParam(void)
 
     lv_slider_set_value(ui_SliderPanelScreenSettingLightSwitch1, _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], LV_ANIM_OFF);
     lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
+    espnow_sink_set_output_volume(_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    if (_espnow_volume_slider != nullptr) {
+        lv_slider_set_value(_espnow_volume_slider, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
+    }
+    if (_espnow_volume_value_label != nullptr) {
+        lv_label_set_text_fmt(_espnow_volume_value_label, "%ld%%", (long)_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    }
     if (_audio_output_dropdown != nullptr) {
         const uint16_t selected = (_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] == AUDIO_OUTPUT_AUX) ? AUDIO_OUTPUT_AUX : AUDIO_OUTPUT_SPEAKER;
         lv_dropdown_set_selected(_audio_output_dropdown, selected);
     }
+    _nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = AUDIO_OUTPUT_AUX;
     if (_display_timeout_dropdown != nullptr) {
         lv_dropdown_set_selected(_display_timeout_dropdown, screen_timeout_to_index(_nvs_param_map[NVS_KEY_DISPLAY_TIMEOUT]));
     }
     applyThemeToSettingScreens();
     updateThemePreviewSelection();
+    updateEspnowUiState();
 }
 
 void AppSettings::refreshDeviceInfoUi(void)
@@ -1791,10 +1875,84 @@ void AppSettings::refreshDeviceInfoUi(void)
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout5, get_combined_firmware_version_text());
 }
 
+void AppSettings::showEspnowScanningUi(void)
+{
+    if (!isUiObjectValid(ui_LabelScreenSettingESPNOWStatus)) {
+        return;
+    }
+    lv_obj_add_state(ui_SwitchPanelScreenSettingESPNOWSwitch, LV_STATE_CHECKED);
+    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning For Room...");
+    lv_obj_clear_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
+}
+
+void AppSettings::showEspnowConnectedUi(const char *room_name)
+{
+    char status_buf[64];
+    snprintf(status_buf, sizeof(status_buf), "Connected Room: %s", (room_name && room_name[0]) ? room_name : "Unknown");
+    lv_obj_add_state(ui_SwitchPanelScreenSettingESPNOWSwitch, LV_STATE_CHECKED);
+    if (strcmp(lv_label_get_text(ui_LabelScreenSettingESPNOWStatus), status_buf) != 0) {
+        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, status_buf);
+    }
+    if (_espnow_selected_room_label != nullptr) {
+        char room_buf[48];
+        snprintf(room_buf, sizeof(room_buf), "Room: %s", (room_name && room_name[0]) ? room_name : "Unknown");
+        if (strcmp(lv_label_get_text(_espnow_selected_room_label), room_buf) != 0) {
+            lv_label_set_text(_espnow_selected_room_label, room_buf);
+        }
+    }
+    if (!lv_obj_has_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clean(ui_PanelScreenSettingESPNOWList);
+    }
+    if (lv_obj_has_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_clear_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!lv_obj_has_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (_espnow_volume_slider != nullptr) {
+        lv_slider_set_value(_espnow_volume_slider, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
+    }
+    if (_espnow_volume_value_label != nullptr) {
+        lv_label_set_text_fmt(_espnow_volume_value_label, "%ld%%", (long)_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    }
+}
+
+void AppSettings::updateEspnowUiState(void)
+{
+    if (!isUiObjectValid(ui_SwitchPanelScreenSettingESPNOWSwitch)) {
+        return;
+    }
+    if (espnow_sink_is_connected()) {
+        espnow_room_info_t room = {};
+        char room_name[32] = "Unknown";
+        if (espnow_sink_get_connected_room(&room)) {
+            formatEspnowRoomName(room, room_name, sizeof(room_name));
+        }
+        showEspnowConnectedUi(room_name);
+        return;
+    }
+
+    if (espnow_sink_get_autoscan()) {
+        showEspnowScanningUi();
+        if (_espnow_scan_task == nullptr) {
+            xTaskCreatePinnedToCore(espnowScanTask, "espnow_scan", 4096, this, 2, &_espnow_scan_task, 0);
+        }
+    } else {
+        lv_obj_clear_state(ui_SwitchPanelScreenSettingESPNOWSwitch, LV_STATE_CHECKED);
+        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Assistive Listening Off");
+        lv_obj_add_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void AppSettings::applyThemeToSettingScreens(void)
 {
     const app_theme_id_t current_theme = sanitize_theme_id(app_get_ui_theme_id());
-    const lv_img_dsc_t *wallpaper = nullptr;
+    const lv_img_dsc_t *wallpaper = get_theme_wallpaper_asset(current_theme);
     const uint32_t surface_color = get_theme_surface_color(current_theme);
     const uint32_t surface_alt_color = get_theme_surface_alt_color(current_theme);
 
@@ -2527,6 +2685,15 @@ void AppSettings::wifiScanTask(void *arg)
 
     while (true) {
         if (!s_wifi_stack_initialized) {
+            /* Hold off on esp_wifi_init until the C6 OTA + activation flow
+             * has completed. The factory v2.3.0 C6 firmware deadlocks the
+             * SDIO transport when WiFi RPCs and slave-OTA RPCs run
+             * concurrently, which previously caused the OTA write to time
+             * out at chunk #2 and left the C6 stuck on broken firmware. */
+            if (!c6_init_wifi_allowed()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
             const TickType_t now_tick = xTaskGetTickCount();
             if ((last_init_retry_tick == 0) || ((now_tick - last_init_retry_tick) >= pdMS_TO_TICKS(1000))) {
                 esp_err_t ret = app->initWifi();
@@ -2554,19 +2721,22 @@ void AppSettings::wifiScanTask(void *arg)
             }
         }
 
-        // Auto-reconnect to saved networks after WiFi is initialized (runs once at startup)
-        if (s_wifi_stack_initialized && !st_startup_auto_reconnect_done && 
-            !(getWifiEventBits() & WIFI_EVENT_CONNECTED) && !st_auto_reconnect_in_progress) {
+        // Auto-reconnect disabled: Wi-Fi scanning changes the C6's channel
+        // and breaks ESP-NOW beacon reception. ESP-NOW has radio priority.
+        if (s_wifi_stack_initialized && !st_startup_auto_reconnect_done) {
             st_startup_auto_reconnect_done = true;
-            ESP_LOGI(TAG, "WiFi initialized - attempting startup auto-reconnect to saved networks");
-            
-            // Perform a scan to find available networks
+            ESP_LOGW(TAG, "WiFi scan/auto-reconnect skipped (ESP-NOW radio priority)");
+            vTaskDelay(pdMS_TO_TICKS(WIFI_SCAN_TASK_PERIOD_MS));
+            continue;
+        }
+
+        if (false) {
+            // Dead code — original auto-reconnect scan kept for future OTA use
             uint16_t number = WIFI_SCAN_FETCH_SIZE;
             wifi_ap_record_t ap_info[WIFI_SCAN_FETCH_SIZE];
             uint16_t ap_count = 0;
             memset(ap_info, 0, sizeof(ap_info));
 
-            /* Skip startup auto-reconnect scan if ESP-NOW is already connected */
             if (espnow_sink_is_connected()) {
                 ESP_LOGW(TAG, "Startup WiFi scan skipped: ESP-NOW is connected");
                 st_startup_auto_reconnect_done = true;
@@ -2611,13 +2781,8 @@ void AppSettings::wifiScanTask(void *arg)
             }
         }
 
-        // Simplified scan logic: scan on fixed interval regardless of scrolling
-        if (s_wifi_stack_initialized && (getWifiEventBits() & WIFI_EVENT_SCANING)) {
-            app->scanWifiAndUpdateUi();
-            vTaskDelay(pdMS_TO_TICKS(WIFI_SCAN_TASK_PERIOD_MS));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
+        // Wi-Fi scanning disabled — ESP-NOW has radio priority
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 
 err:
@@ -2963,6 +3128,10 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
         app->refreshDeviceInfoUi();
     }
 
+    if (app->_screen_index == UI_ESPNOW_SETTING_INDEX) {
+        app->updateEspnowUiState();
+    }
+
 end:
     return;
 }
@@ -3105,7 +3274,9 @@ end:
 }
 
 void AppSettings::onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e) {
-    int volume = lv_slider_get_value(ui_SliderPanelScreenSettingVolumeSwitch);
+    lv_obj_t *slider = lv_event_get_target(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    int volume = lv_slider_get_value(slider);
 
     AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
@@ -3116,8 +3287,22 @@ void AppSettings::onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t 
             lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
             return;
         }
+        espnow_sink_set_output_volume(volume);
         app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME] = volume;
-        app->setNvsParam(NVS_KEY_AUDIO_VOLUME, volume);
+        if (app->_espnow_volume_value_label != nullptr && app->isUiObjectValid(app->_espnow_volume_value_label)) {
+            lv_label_set_text_fmt(app->_espnow_volume_value_label, "%d%%", volume);
+        }
+        if (slider != ui_SliderPanelScreenSettingVolumeSwitch &&
+            app->isUiObjectValid(ui_SliderPanelScreenSettingVolumeSwitch)) {
+            lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, volume, LV_ANIM_OFF);
+        }
+        if (slider == ui_SliderPanelScreenSettingVolumeSwitch &&
+            app->_espnow_volume_slider != nullptr && app->isUiObjectValid(app->_espnow_volume_slider)) {
+            lv_slider_set_value(app->_espnow_volume_slider, volume, LV_ANIM_OFF);
+        }
+    }
+    if (code == LV_EVENT_RELEASED) {
+        app->setNvsParam(NVS_KEY_AUDIO_VOLUME, app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
     }
 
 end:
@@ -3127,32 +3312,27 @@ end:
 void AppSettings::onDropdownAudioOutputValueChangeEventCallback(lv_event_t *e)
 {
     AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    if (app == nullptr) {
-        ESP_LOGE(TAG, "Invalid app pointer");
-        return;
-    }
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
-    const uint16_t selected = lv_dropdown_get_selected((lv_obj_t *)lv_event_get_target(e));
-    const int route = (selected == AUDIO_OUTPUT_AUX) ? AUDIO_OUTPUT_AUX : AUDIO_OUTPUT_SPEAKER;
-    if (route == app->_nvs_param_map[NVS_KEY_AUDIO_OUTPUT]) {
-        return;
-    }
+    {
+        app->_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = AUDIO_OUTPUT_AUX;
+        bsp_extra_output_route_set(BSP_EXTRA_AUDIO_OUTPUT_AUX);
+        app->setNvsParam(NVS_KEY_AUDIO_OUTPUT, AUDIO_OUTPUT_AUX);
 
-    const bsp_extra_audio_output_route_t bsp_route = (route == AUDIO_OUTPUT_AUX) ? BSP_EXTRA_AUDIO_OUTPUT_AUX : BSP_EXTRA_AUDIO_OUTPUT_SPEAKER;
-    if (bsp_extra_output_route_set(bsp_route) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to switch audio output route");
-        if (app->_audio_output_dropdown != nullptr) {
-            const uint16_t previous = (app->_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] == AUDIO_OUTPUT_AUX) ? AUDIO_OUTPUT_AUX : AUDIO_OUTPUT_SPEAKER;
-            lv_dropdown_set_selected(app->_audio_output_dropdown, previous);
+        if (app->_audio_output_dropdown != nullptr && app->isUiObjectValid(app->_audio_output_dropdown)) {
+            lv_dropdown_set_selected(app->_audio_output_dropdown, AUDIO_OUTPUT_AUX);
         }
-        return;
+        if (app->_espnow_output_dropdown != nullptr && app->isUiObjectValid(app->_espnow_output_dropdown)) {
+            lv_dropdown_set_selected(app->_espnow_output_dropdown, 0);
+        }
     }
 
-    app->_nvs_param_map[NVS_KEY_AUDIO_OUTPUT] = route;
-    app->setNvsParam(NVS_KEY_AUDIO_OUTPUT, route);
+end:
+    return;
 }
 
 void AppSettings::onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
     brightness = lv_slider_get_value(ui_SliderPanelScreenSettingLightSwitch1);
 
     AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
@@ -3166,7 +3346,9 @@ void AppSettings::onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t *
             return;
         }
         app->_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
-        app->setNvsParam(NVS_KEY_DISPLAY_BRIGHTNESS, brightness);
+    }
+    if (code == LV_EVENT_RELEASED) {
+        app->setNvsParam(NVS_KEY_DISPLAY_BRIGHTNESS, app->_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
     }
 
 end:
@@ -3369,29 +3551,39 @@ void AppSettings::onESPNOWSwitchValueChangeEventCallback(lv_event_t *e)
     bool enable = (state & LV_STATE_CHECKED);
 
     if (enable) {
-        /* Hand the full lifecycle over to the autoscan state machine:
-         * it sends CMD_INIT to C6, runs continuous scan→auto-join (highest
-         * RSSI)→monitor, and on drop retries 10× before abandoning.
-         * UI only monitors and displays state here. */
+        /* User just turned ON Assistive Listening. Bring the C6 radio up
+         * and start a continuous scan. We deliberately disable the
+         * autoscan auto-join behaviour: the user must pick a room from
+         * the list. Drop-recovery for an explicitly-picked room still
+         * works because join_room() seeds the autoscan target cache. */
+        espnow_sink_set_autoscan_autojoin(false);
         espnow_sink_set_autoscan(true);
-        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning for audio sources.");
-        lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
+        app->showEspnowScanningUi();
         /* Create UI-update task (room list + scan animation). It does not
          * call any espnow_sink_* lifecycle functions — only read-only
          * queries (get_rooms, is_connected, get_state). */
         if (app->_espnow_scan_task == nullptr) {
-            xTaskCreate(espnowScanTask, "espnow_scan", 4096, app, 2, &app->_espnow_scan_task);
+            xTaskCreatePinnedToCore(espnowScanTask, "espnow_scan", 4096, app, 2, &app->_espnow_scan_task, 0);
         }
     } else {
-        /* Stop the autoscan state machine; it owns C6 deinit internally. */
+        /* User turned OFF Assistive Listening. Tear down BOTH UI tasks
+         * before disabling the sink: otherwise the stats task races and
+         * overwrites our "Assistive Audio Off" label with the spurious
+         * "Connection lost. Searching..." message. */
         if (app->_espnow_scan_task != nullptr) {
             vTaskDelete(app->_espnow_scan_task);
             app->_espnow_scan_task = nullptr;
         }
+        if (app->_espnow_stats_task != nullptr) {
+            vTaskDelete(app->_espnow_stats_task);
+            app->_espnow_stats_task = nullptr;
+        }
         espnow_sink_set_autoscan(false);
+        espnow_sink_set_autoscan_autojoin(false);
         espnow_sink_leave_room();
         espnow_sink_disable();
-        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "ESP-NOW Audio disabled");
+        app->_espnow_selected_room = -1;
+        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Assistive Listening Off");
         lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
@@ -3408,13 +3600,18 @@ void AppSettings::onESPNOWDisconnectButtonClickedEventCallback(lv_event_t *e)
     }
 
     bool c6_alive = espnow_sink_leave_room();
+    app->_espnow_selected_room = -1;
     lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clean(ui_PanelScreenSettingESPNOWList);
     
     if (c6_alive) {
-        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Disconnected. Scanning for audio sources.");
+        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning For Room...");
         lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
         espnow_sink_start_scan();
+        if (app->_espnow_scan_task == nullptr) {
+            xTaskCreatePinnedToCore(espnowScanTask, "espnow_scan", 4096, app, 2, &app->_espnow_scan_task, 0);
+        }
     } else {
         lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "C6 unresponsive - please restart device");
         lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
@@ -3436,15 +3633,26 @@ void AppSettings::onESPNOWRoomButtonClickedEventCallback(lv_event_t *e)
     espnow_sink_stop_scan();
     esp_err_t ret = espnow_sink_join_room(room_index);
     if (ret == ESP_OK) {
+        if (app->_espnow_scan_task != nullptr) {
+            vTaskDelete(app->_espnow_scan_task);
+            app->_espnow_scan_task = nullptr;
+        }
+        app->_espnow_selected_room = room_index;
+
+        espnow_room_info_t rooms[ESPNOW_SINK_MAX_ROOMS];
+        int count = espnow_sink_get_rooms(rooms, ESPNOW_SINK_MAX_ROOMS);
+        char room_text[32] = "Unknown";
+        if (room_index >= 0 && room_index < count) {
+            formatEspnowRoomName(rooms[room_index], room_text, sizeof(room_text));
+        }
+        lv_label_set_text_fmt(ui_LabelScreenSettingESPNOWStatus, "Connecting To Room: %s", room_text);
         lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Connected to audio source");
-        
-        // Create stats update task
-        if (app->_espnow_stats_task == nullptr) {
-            xTaskCreate(espnowStatsTask, "espnow_stats", 4096, app, 2, &app->_espnow_stats_task);
+        if (app->_espnow_selected_room_label != nullptr) {
+            lv_label_set_text_fmt(app->_espnow_selected_room_label, "Room: %s", room_text);
         }
+
     } else {
         if (ret == ESP_ERR_INVALID_ARG) {
             lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Room no longer available. Refreshing...");
@@ -3462,6 +3670,8 @@ void AppSettings::espnowScanTask(void *arg)
     AppSettings *app = (AppSettings *)arg;
     espnow_room_info_t rooms[ESPNOW_SINK_MAX_ROOMS];
     int scan_dots_phase = 0;
+    char last_room_signature[192] = "";
+    int last_count = -1;
     
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));  // Update every second
@@ -3485,9 +3695,28 @@ void AppSettings::espnowScanTask(void *arg)
             }
 
             if (count > 0) {
+                char room_signature[192] = "";
+                size_t used = 0;
+                for (int i = 0; i < count && used < sizeof(room_signature); i++) {
+                    char room_text[32];
+                    formatEspnowRoomName(rooms[i], room_text, sizeof(room_text));
+                    int written = snprintf(room_signature + used, sizeof(room_signature) - used,
+                                           "%s:%d|", room_text, rooms[i].rssi);
+                    if (written < 0) {
+                        break;
+                    }
+                    used += (size_t)written;
+                }
+                if (count == last_count && strcmp(room_signature, last_room_signature) == 0) {
+                    bsp_display_unlock();
+                    continue;
+                }
+                last_count = count;
+                snprintf(last_room_signature, sizeof(last_room_signature), "%s", room_signature);
+
                 lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
-                lv_label_set_text_fmt(ui_LabelScreenSettingESPNOWStatus, "Found %d audio source(s)", count);
+                lv_label_set_text_fmt(ui_LabelScreenSettingESPNOWStatus, "Found %d Room%s", count, (count == 1) ? "" : "s");
                 
                 // Update room list
                 lv_obj_clean(ui_PanelScreenSettingESPNOWList);
@@ -3502,24 +3731,28 @@ void AppSettings::espnowScanTask(void *arg)
                     lv_obj_set_style_bg_color(btn, lv_color_hex(0xCBCBCB), LV_PART_MAIN | LV_STATE_PRESSED);
                     lv_obj_set_style_radius(btn, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
                     
-                    // Room label with name and RSSI
+                    // Room label with name and RSSI. Prefer the broadcaster's
+                    // human-readable name (ECast beacon) when available; fall
+                    // back to the room code for legacy / pre-ECast sources.
                     lv_obj_t *label = lv_label_create(btn);
-                    char room_text[16];
-                    formatEspnowRoomCode(rooms[i].room_code, room_text, sizeof(room_text));
+                    char room_text[32];
+                    formatEspnowRoomName(rooms[i], room_text, sizeof(room_text));
                     lv_label_set_text_fmt(label, "%s  (RSSI: %d dBm)", room_text, rooms[i].rssi);
                     lv_obj_set_style_text_font(label, &lv_font_montserrat_24, LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_obj_set_style_text_color(label, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DEFAULT);
                     lv_obj_center(label);
                 }
             } else {
+                last_count = 0;
+                last_room_signature[0] = '\0';
                 lv_obj_add_flag(ui_SpinnerScreenSettingESPNOW, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
                 if (scan_dots_phase == 0) {
-                    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning for audio sources.");
+                    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning For Room.");
                 } else if (scan_dots_phase == 1) {
-                    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning for audio sources..");
+                    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning For Room..");
                 } else {
-                    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning for audio sources...");
+                    lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Scanning For Room...");
                 }
                 scan_dots_phase = (scan_dots_phase + 1) % 3;
             }
@@ -3531,22 +3764,49 @@ void AppSettings::espnowScanTask(void *arg)
 void AppSettings::espnowStatsTask(void *arg)
 {
     AppSettings *app = (AppSettings *)arg;
-    uint32_t packets_rx = 0;
-    uint32_t packets_lost = 0;
-    
+    int not_connected_ticks = 0;
+    bool connected_ui_shown = false;
+    char last_room_name[32] = "";
+
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(500));  // Update every 500ms
-        
+        vTaskDelay(pdMS_TO_TICKS(5000));
+
         if (!app->isUiAlive()) {
-            ESP_LOGW(TAG, "espnowStatsTask: UI destroyed, exiting");
             app->_espnow_stats_task = nullptr;
             vTaskDelete(NULL);
             return;
         }
 
         if (espnow_sink_is_connected()) {
-            espnow_sink_get_stats(&packets_rx, &packets_lost);
+            not_connected_ticks = 0;
+            espnow_room_info_t room = {};
+            char room_name[32] = "Unknown";
+            if (espnow_sink_get_connected_room(&room)) {
+                formatEspnowRoomName(room, room_name, sizeof(room_name));
+            }
+            if (connected_ui_shown && strcmp(room_name, last_room_name) == 0) {
+                continue;
+            }
+            bsp_display_lock(0);
+            if (app->isUiAlive()) {
+                app->showEspnowConnectedUi(room_name);
+            }
+            bsp_display_unlock();
+            connected_ui_shown = true;
+            snprintf(last_room_name, sizeof(last_room_name), "%s", room_name);
+            continue;
+        }
 
+        if (app->_espnow_selected_room < 0) {
+            app->_espnow_stats_task = nullptr;
+            vTaskDelete(NULL);
+            return;
+        }
+
+        not_connected_ticks++;
+        if (not_connected_ticks >= 3) {
+            connected_ui_shown = false;
+            last_room_name[0] = '\0';
             bsp_display_lock(0);
             if (!app->isUiAlive()) {
                 bsp_display_unlock();
@@ -3554,36 +3814,15 @@ void AppSettings::espnowStatsTask(void *arg)
                 vTaskDelete(NULL);
                 return;
             }
-            lv_label_set_text_fmt(ui_LabelScreenSettingESPNOWPacketsRx, "Packets: %lu", packets_rx);
-            lv_label_set_text_fmt(ui_LabelScreenSettingESPNOWPacketsLost, "Lost: %lu (%.1f%%)", 
-                packets_lost, 
-                packets_rx > 0 ? (100.0f * packets_lost / (packets_rx + packets_lost)) : 0.0f);
-
-            espnow_state_t st = espnow_sink_get_state();
-            if (st == ESPNOW_STATE_CONNECTED) {
-                lv_label_set_text(ui_LabelScreenSettingESPNOWRSSI, "Connected");
-            } else {
-                lv_label_set_text_fmt(ui_LabelScreenSettingESPNOWRSSI, "State: %d", (int)st);
-            }
+            lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Reconnecting To Room...");
             bsp_display_unlock();
-        } else {
-            // Connection lost - return to scan mode
-            if (app->_espnow_stats_task != nullptr) {
-                bsp_display_lock(0);
-                if (!app->isUiAlive()) {
-                    bsp_display_unlock();
-                    app->_espnow_stats_task = nullptr;
-                    vTaskDelete(NULL);
-                    return;
-                }
-                app->_espnow_stats_task = nullptr;
-                lv_obj_add_flag(ui_PanelScreenSettingESPNOWStats, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_clear_flag(ui_PanelScreenSettingESPNOWList, LV_OBJ_FLAG_HIDDEN);
-                lv_label_set_text(ui_LabelScreenSettingESPNOWStatus, "Connection lost. Searching...");
-                bsp_display_unlock();
-                espnow_sink_start_scan();
-                vTaskDelete(NULL);
+            espnow_sink_start_scan();
+            if (app->_espnow_scan_task == nullptr) {
+                xTaskCreatePinnedToCore(espnowScanTask, "espnow_scan", 4096, app, 2, &app->_espnow_scan_task, 0);
             }
+            not_connected_ticks = 0;
         }
     }
 }

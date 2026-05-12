@@ -86,17 +86,15 @@ const char* app_sntp_get_timezone(void)
 // Get timezone index for UI dropdown
 int app_sntp_get_timezone_index(void)
 {
-    // Common timezone options (matching index order in dropdown)
+    // Common US timezone options (matching index order in dropdown)
     static const char *tz_options[] = {
-        "PST8PDT,M3.2.0,M11.1.0",    // 0: Pacific Time (California)
-        "MST7MDT,M3.2.0,M11.1.0",    // 1: Mountain Time
-        "CST6CDT,M3.2.0,M11.1.0",    // 2: Central Time
-        "EST5EDT,M3.2.0,M11.1.0",    // 3: Eastern Time
-        "UTC0",                       // 4: UTC
-        "GMT0BST,M3.5.0/1,M10.5.0",  // 5: London
-        "CET-1CEST,M3.5.0,M10.5.0/3", // 6: Central Europe
-        "CST-8",                      // 7: China Standard Time
-        "JST-9",                      // 8: Japan Standard Time
+        "EST5EDT,M3.2.0,M11.1.0",     // 0: Eastern
+        "CST6CDT,M3.2.0,M11.1.0",     // 1: Central
+        "MST7MDT,M3.2.0,M11.1.0",     // 2: Mountain
+        "MST7",                        // 3: Arizona (no DST)
+        "PST8PDT,M3.2.0,M11.1.0",     // 4: Pacific
+        "AKST9AKDT,M3.2.0,M11.1.0",   // 5: Alaska
+        "HST10",                       // 6: Hawaii (no DST)
     };
     const int num_options = sizeof(tz_options) / sizeof(tz_options[0]);
 
@@ -105,22 +103,20 @@ int app_sntp_get_timezone_index(void)
             return i;
         }
     }
-    return 0; // Default to Pacific Time
+    return 4; // Default to Pacific Time
 }
 
 // Set timezone by index
 void app_sntp_set_timezone_by_index(int index)
 {
     static const char *tz_options[] = {
-        "PST8PDT,M3.2.0,M11.1.0",    // 0: Pacific Time (California)
-        "MST7MDT,M3.2.0,M11.1.0",    // 1: Mountain Time
-        "CST6CDT,M3.2.0,M11.1.0",    // 2: Central Time
-        "EST5EDT,M3.2.0,M11.1.0",    // 3: Eastern Time
-        "UTC0",                       // 4: UTC
-        "GMT0BST,M3.5.0/1,M10.5.0",  // 5: London
-        "CET-1CEST,M3.5.0,M10.5.0/3", // 6: Central Europe
-        "CST-8",                      // 7: China Standard Time
-        "JST-9",                      // 8: Japan Standard Time
+        "EST5EDT,M3.2.0,M11.1.0",
+        "CST6CDT,M3.2.0,M11.1.0",
+        "MST7MDT,M3.2.0,M11.1.0",
+        "MST7",
+        "PST8PDT,M3.2.0,M11.1.0",
+        "AKST9AKDT,M3.2.0,M11.1.0",
+        "HST10",
     };
     const int num_options = sizeof(tz_options) / sizeof(tz_options[0]);
 

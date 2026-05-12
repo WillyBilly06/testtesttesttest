@@ -1,5 +1,4 @@
 set(APP_SOURCE_DIRS
-    ${CMAKE_CURRENT_LIST_DIR}/calculator
     ${CMAKE_CURRENT_LIST_DIR}/setting
 )
 
@@ -16,7 +15,7 @@ endforeach()
 idf_component_register(
     SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS}
     INCLUDE_DIRS .
-    REQUIRES lvgl__lvgl esp_event esp_wifi nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board esp_video pedestrian_detect human_face_detect espressif__esp_lcd_touch_gt911 espnow_sink esp_app_format)
+    REQUIRES lvgl__lvgl esp_event esp_wifi nvs_flash esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espnow_sink esp_app_format)
 
 target_compile_options(
     ${COMPONENT_LIB}

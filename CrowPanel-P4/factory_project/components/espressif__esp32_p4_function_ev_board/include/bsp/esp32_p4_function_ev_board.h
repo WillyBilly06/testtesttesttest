@@ -49,9 +49,9 @@
 
 /* Audio */
 #define BSP_I2S_MCLK          (GPIO_NUM_NC)
-#define BSP_I2S_SCLK          (GPIO_NUM_22)
-#define BSP_I2S_LCLK          (GPIO_NUM_21)
-#define BSP_I2S_DOUT          (GPIO_NUM_23)
+#define BSP_I2S_SCLK          (GPIO_NUM_4)
+#define BSP_I2S_LCLK          (GPIO_NUM_2)
+#define BSP_I2S_DOUT          (GPIO_NUM_3)
 #define BSP_POWER_AMP_IO      (GPIO_NUM_30)
 
 #define BSP_I2S_CLK           (GPIO_NUM_24)
@@ -63,11 +63,38 @@
 #define BSP_LCD_RST           (GPIO_NUM_NC)
 #define BSP_LCD_TOUCH_RST     (GPIO_NUM_40)
 #define BSP_LCD_TOUCH_INT     (GPIO_NUM_42)
-#else
+#elif CONFIG_BSP_LCD_TYPE_1280_800
 #define BSP_LCD_BACKLIGHT     (GPIO_NUM_23)
 #define BSP_LCD_RST           (GPIO_NUM_NC)
 #define BSP_LCD_TOUCH_RST     (GPIO_NUM_NC)
 #define BSP_LCD_TOUCH_INT     (GPIO_NUM_NC)
+#else
+#define BSP_LCD_BACKLIGHT     (GPIO_NUM_NC)
+#define BSP_LCD_RST           (GPIO_NUM_NC)
+#define BSP_LCD_TOUCH_RST     (GPIO_NUM_36)
+#define BSP_LCD_TOUCH_INT     (GPIO_NUM_42)
+
+#define BSP_LCD_RGB_DISP_EN   (GPIO_NUM_NC)
+#define BSP_LCD_RGB_HSYNC     (GPIO_NUM_40)
+#define BSP_LCD_RGB_VSYNC     (GPIO_NUM_41)
+#define BSP_LCD_RGB_DE        (GPIO_NUM_2)
+#define BSP_LCD_RGB_PCLK      (GPIO_NUM_3)
+#define BSP_LCD_RGB_DATA0     (GPIO_NUM_8)
+#define BSP_LCD_RGB_DATA1     (GPIO_NUM_7)
+#define BSP_LCD_RGB_DATA2     (GPIO_NUM_6)
+#define BSP_LCD_RGB_DATA3     (GPIO_NUM_5)
+#define BSP_LCD_RGB_DATA4     (GPIO_NUM_4)
+#define BSP_LCD_RGB_DATA5     (GPIO_NUM_14)
+#define BSP_LCD_RGB_DATA6     (GPIO_NUM_13)
+#define BSP_LCD_RGB_DATA7     (GPIO_NUM_12)
+#define BSP_LCD_RGB_DATA8     (GPIO_NUM_11)
+#define BSP_LCD_RGB_DATA9     (GPIO_NUM_10)
+#define BSP_LCD_RGB_DATA10    (GPIO_NUM_9)
+#define BSP_LCD_RGB_DATA11    (GPIO_NUM_19)
+#define BSP_LCD_RGB_DATA12    (GPIO_NUM_18)
+#define BSP_LCD_RGB_DATA13    (GPIO_NUM_17)
+#define BSP_LCD_RGB_DATA14    (GPIO_NUM_16)
+#define BSP_LCD_RGB_DATA15    (GPIO_NUM_15)
 #endif
 
 #ifdef __cplusplus

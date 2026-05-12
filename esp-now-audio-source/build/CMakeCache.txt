@@ -353,7 +353,7 @@ Mbed TLS_IS_TOP_LEVEL:STATIC=OFF
 Mbed TLS_SOURCE_DIR:STATIC=D:/Bluetooth Project - Copy/esp-idf/components/mbedtls/mbedtls
 
 //No help, variable specified on the command line.
-PYTHON:UNINITIALIZED=C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe
+PYTHON:UNINITIALIZED=C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe
 
 //No help, variable specified on the command line.
 PYTHON_DEPS_CHECKED:UNINITIALIZED=1
@@ -596,7 +596,7 @@ C_COMPILER_SUPPORTS_WFORMAT_SIGNEDNESS:INTERNAL=1
 //Details about finding Git
 FIND_PACKAGE_MESSAGE_DETAILS_Git:INTERNAL=[C:/Program Files/Git/cmd/git.exe][v2.52.0.windows.1()]
 //Details about finding Python3
-FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[C:/Users/ngocv/.espressif/python_env/idf5.5_py3.14_env/Scripts/python.exe][cfound components: Interpreter ][v3.14.3()]
+FIND_PACKAGE_MESSAGE_DETAILS_Python3:INTERNAL=[C:/Users/ngocv/.espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe][cfound components: Interpreter ][v3.11.0()]
 //Details about finding Threads
 FIND_PACKAGE_MESSAGE_DETAILS_Threads:INTERNAL=[TRUE][v()]
 //ADVANCED property for variable: GIT_EXECUTABLE
@@ -607,10 +607,10 @@ _GNUInstallDirs_LAST_CMAKE_INSTALL_PREFIX:INTERNAL=C:/Program Files (x86)/espnow
 _Python3_Compiler_REASON_FAILURE:INTERNAL=
 //Development reason failure
 _Python3_Development_REASON_FAILURE:INTERNAL=
-_Python3_EXECUTABLE:INTERNAL=C:/Users/ngocv/.espressif/python_env/idf5.5_py3.14_env/Scripts/python.exe
+_Python3_EXECUTABLE:INTERNAL=C:/Users/ngocv/.espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe
 //Python3 Properties
-_Python3_INTERPRETER_PROPERTIES:INTERNAL=Python;3;14;3;32;64;;;abi3;C:\Python314\Lib;C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib;C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages;C:\Users\ngocv\.espressif\python_env\idf5.5_py3.14_env\Lib\site-packages
-_Python3_INTERPRETER_SIGNATURE:INTERNAL=5b22743fa007c58b177821212c8fe367
+_Python3_INTERPRETER_PROPERTIES:INTERNAL=Python;3;11;0;32;64;;;abi3;C:\Users\ngocv\AppData\Local\Programs\Python\Python311\Lib;C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Lib;C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Lib\site-packages;C:\Users\ngocv\.espressif\python_env\idf5.5_py3.11_env\Lib\site-packages
+_Python3_INTERPRETER_SIGNATURE:INTERNAL=ea410c87522870717f44009cb5fda4b8
 //NumPy reason failure
 _Python3_NumPy_REASON_FAILURE:INTERNAL=
 
