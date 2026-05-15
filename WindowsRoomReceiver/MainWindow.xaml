@@ -1,0 +1,93 @@
+<Window x:Class="WindowsRoomReceiver.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Room Audio Receiver" Height="720" Width="1120"
+        Background="#F4F7F6" WindowStartupLocation="CenterScreen">
+    <Grid Margin="28">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="280"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <Border Background="#102A27" CornerRadius="24" Padding="24">
+            <StackPanel>
+                <TextBlock Text="Room Audio" Foreground="White" FontSize="28" FontWeight="Bold"/>
+                <TextBlock Text="Secure UDP SBC Receiver" Foreground="#A7C7BE" Margin="0,4,0,28"/>
+                <Button Content="Rooms" HorizontalAlignment="Stretch"/>
+                <Button Content="Now Playing" HorizontalAlignment="Stretch" Background="#244B46"/>
+                <Button Content="Settings" HorizontalAlignment="Stretch" Background="#244B46"/>
+                <Button Content="Advanced" HorizontalAlignment="Stretch" Background="#244B46"/>
+                <TextBlock x:Name="StatusText" Foreground="#A7C7BE" TextWrapping="Wrap" Margin="0,36,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Column="1" Margin="28,0,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <DockPanel Margin="0,0,0,20">
+                <StackPanel>
+                    <TextBlock Text="Available Rooms" FontSize="34" FontWeight="Bold" Foreground="#17201E"/>
+                    <TextBlock Text="Choose a paired room, or pair a new Windows receiver with a 6-digit PIN." Foreground="#667085"/>
+                </StackPanel>
+                <Button DockPanel.Dock="Right" Content="Retry Discovery" Click="RetryDiscovery_Click" Width="150"/>
+            </DockPanel>
+
+            <Border Grid.Row="1" Background="White" CornerRadius="18" Padding="18" Margin="0,0,0,18">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="180"/>
+                        <ColumnDefinition Width="110"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="Manual UDP audio endpoint" FontWeight="Bold" FontSize="16"/>
+                        <TextBlock Text="Use this when the source sends audio to a fixed unicast or multicast IP/port, for example 239.10.10.10:5004."
+                                   Foreground="#667085" TextWrapping="Wrap" Margin="0,3,12,0"/>
+                    </StackPanel>
+                    <TextBox x:Name="ManualUdpIpBox" Grid.Column="1" Text="239.10.10.10" VerticalContentAlignment="Center" Margin="8,0"/>
+                    <TextBox x:Name="ManualUdpPortBox" Grid.Column="2" Text="5004" VerticalContentAlignment="Center" Margin="8,0"/>
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                        <CheckBox x:Name="UseManualUdpBox" Content="Use" IsChecked="True" VerticalAlignment="Center" Margin="8,0"/>
+                        <Button Content="Apply" Click="ApplyManualUdp_Click" Margin="12,0,0,0"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <ListBox x:Name="RoomsList" Grid.Row="2" BorderThickness="0" Background="Transparent">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="White" CornerRadius="20" Padding="22" Margin="0,0,0,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding RoomName, Mode=OneWay}" FontSize="22" FontWeight="Bold"/>
+                                    <TextBlock Text="{Binding CodecInfo, Mode=OneWay}" Foreground="#667085" Margin="0,4"/>
+                                    <TextBlock Foreground="#667085">
+                                        <Run Text="{Binding StatusText, Mode=OneWay}"/>
+                                        <Run Text=" · "/>
+                                        <Run Text="{Binding RoomCode, Mode=OneWay}"/>
+                                        <Run Text=" · "/>
+                                        <Run Text="{Binding SourceIp, Mode=OneWay}"/>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding LocalNetworkText, Mode=OneWay}" Foreground="#8A98A6" FontSize="12" Margin="0,6,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Button Content="Pair" Click="Pair_Click"/>
+                                    <Button Content="Connect" Click="Connect_Click"/>
+                                    <Button Content="Identify" Click="Identify_Click" Background="#244B46"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+    </Grid>
+</Window>
