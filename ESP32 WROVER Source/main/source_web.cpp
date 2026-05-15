@@ -239,18 +239,14 @@ static esp_err_t root_get(httpd_req_t *req)
         "<button>Set Password &amp; Lock</button></form></div>");
 
     char pin[7] = {0};
-    uint32_t pin_remaining_ms = 0;
-    bool pairing = source_udp_control_get_pairing_pin(pin, &pin_remaining_ms);
+    bool pairing = source_udp_control_get_pairing_pin(pin, NULL);
     snprintf(chunk, sizeof(chunk),
              "<div class=card><h2>Windows Receiver Pairing</h2>"
-             "<p class=note>Enable pairing only while adding a trusted Windows receiver. The 6-digit PIN is fixed from the room number and pairing expires automatically.</p>"
+             "<p class=note>Pairing is always available. The 6-digit PIN is fixed from the room number.</p>"
              "<div class=status-bar style='margin-bottom:12px'><span class=pill>%s</span>"
-             "<div class=info>PIN: <b>%s</b> &middot; Expires in: <b>%" PRIu32 "s</b></div></div>"
-             "<form method=post action=/pairing_start><button %s>Enable Pairing for 60 Seconds</button></form></div>",
+             "<div class=info>PIN: <b>%s</b> &middot; Availability: <b>Always on</b></div></div></div>",
              pairing ? "PAIRING ON" : "PAIRING OFF",
-             pairing ? pin : "------",
-             pairing ? (pin_remaining_ms / 1000) : 0,
-             disabled);
+             pairing ? pin : "------");
     httpd_resp_sendstr_chunk(req, chunk);
 
     httpd_resp_sendstr_chunk(req,

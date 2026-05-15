@@ -51,7 +51,7 @@
                     <TextBox x:Name="ManualUdpIpBox" Grid.Column="1" Text="239.10.10.10" VerticalContentAlignment="Center" Margin="8,0"/>
                     <TextBox x:Name="ManualUdpPortBox" Grid.Column="2" Text="5004" VerticalContentAlignment="Center" Margin="8,0"/>
                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
-                        <CheckBox x:Name="UseManualUdpBox" Content="Use" IsChecked="True" VerticalAlignment="Center" Margin="8,0"/>
+                        <CheckBox x:Name="UseManualUdpBox" Content="Use" IsChecked="False" VerticalAlignment="Center" Margin="8,0"/>
                         <Button Content="Apply" Click="ApplyManualUdp_Click" Margin="12,0,0,0"/>
                     </StackPanel>
                 </Grid>

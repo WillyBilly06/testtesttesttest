@@ -35,7 +35,7 @@ public sealed class PairingService
         nonce.CopyTo(packet.AsSpan(81));
         CryptoUtil.Cmac(pinKey, packet).CopyTo(packet.AsSpan(97));
 
-        using var udp = UdpSocketUtil.CreateBoundUdp(0, reuseAddress: false, localAddress: local.LocalAddress);
+        using var udp = UdpSocketUtil.CreateUnboundUdp();
         IPEndPoint remote = RoomProtocol.Endpoint(room.SourceIp, room.ControlPort);
         UdpSocketUtil.ConnectUdp(udp, remote);
         for (int attempt = 0; attempt < 3; ++attempt)

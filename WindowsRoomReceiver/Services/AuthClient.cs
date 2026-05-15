@@ -27,7 +27,7 @@ public sealed class AuthClient : IDisposable
         if (clientKey == null) throw new InvalidOperationException("This room must be paired before connecting.");
         NetworkInterfaceSelection local = ResolveLocalAdapter(room);
         _control?.Dispose();
-        _control = UdpSocketUtil.CreateBoundUdp(0, reuseAddress: false, localAddress: local.LocalAddress);
+        _control = UdpSocketUtil.CreateUnboundUdp();
         UdpClient control = _control;
         IPEndPoint remote = RoomProtocol.Endpoint(room.SourceIp, room.ControlPort);
         UdpSocketUtil.ConnectUdp(control, remote);

@@ -140,6 +140,12 @@ static void room_pin_from_code(const char *room_code, char out[7])
     snprintf(out, 7, "%06" PRIu32, hash % 1000000u);
 }
 
+static void refresh_pair_pin_locked(void)
+{
+    room_pin_from_code(s_room_code, s_pair_pin);
+    s_pair_expires_us = INT64_MAX;
+}
+
 static esp_err_t aes_ctr_crypt(const uint8_t key[RAUD_KEY_LEN],
                                const uint8_t nonce[RAUD_NONCE_LEN],
                                const uint8_t *in, uint8_t *out, size_t len)
@@ -293,19 +299,9 @@ static void handle_pair_request(int sock, const raud_pair_request_t *req,
 
     char pin[7] = {0};
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    bool pairing = s_pair_pin[0] != '\0' && esp_timer_get_time() < s_pair_expires_us;
-    if (pairing) {
-        memcpy(pin, s_pair_pin, 6);
-    }
+    refresh_pair_pin_locked();
+    memcpy(pin, s_pair_pin, sizeof(pin));
     xSemaphoreGive(s_lock);
-
-    if (!pairing) {
-        s_pair_rejects++;
-        ESP_LOGW(TAG, "PAIR_REJECT sent to %u.%u.%u.%u:%u reason=pairing_disabled",
-                 ENDPOINT_ARGS((*from)));
-        (void)send_reject(sock, from, from_len, RAUD_MSG_PAIR_REJECT, req->source_id, req->room_code, req->client_id);
-        return;
-    }
 
     uint8_t pin_key[RAUD_KEY_LEN];
     uint8_t expected[RAUD_TAG_LEN];
@@ -364,7 +360,6 @@ static void handle_pair_request(int sock, const raud_pair_request_t *req,
         client->added_ms = now_ms();
         client->last_seen_ms = client->added_ms;
         (void)save_clients_locked();
-        s_pair_pin[0] = '\0';
     }
     xSemaphoreGive(s_lock);
 
@@ -539,7 +534,8 @@ static void discovery_task(void *arg)
             memcpy(adv.source_id, s_source_id, sizeof(adv.source_id));
             memcpy(adv.room_code, s_room_code, sizeof(adv.room_code));
             snprintf(adv.room_name, sizeof(adv.room_name), "%s", s_room_name);
-            adv.pairing_available = (s_pair_pin[0] != '\0' && esp_timer_get_time() < s_pair_expires_us) ? 1 : 0;
+            refresh_pair_pin_locked();
+            adv.pairing_available = 1;
             xSemaphoreGive(s_lock);
             source_udp_session_snapshot_t session = {0};
             (void)source_audio_get_udp_session(&session);
@@ -644,9 +640,7 @@ void source_udp_control_set_room_metadata(const char *room_code, const char *roo
     xSemaphoreTake(s_lock, portMAX_DELAY);
     snprintf(s_room_code, sizeof(s_room_code), "%s", room_code ? room_code : "A10-0001");
     snprintf(s_room_name, sizeof(s_room_name), "%s", room_name && room_name[0] ? room_name : s_room_code);
-    if (s_pair_pin[0] != '\0' && esp_timer_get_time() < s_pair_expires_us) {
-        room_pin_from_code(s_room_code, s_pair_pin);
-    }
+    refresh_pair_pin_locked();
     xSemaphoreGive(s_lock);
 }
 
@@ -686,11 +680,10 @@ int source_udp_control_get_audio_dests(source_udp_audio_dest_t *out, int max_des
 esp_err_t source_udp_control_enable_pairing(uint32_t duration_ms)
 {
     if (!s_lock) return ESP_ERR_INVALID_STATE;
-    if (duration_ms == 0) duration_ms = CTRL_PAIR_DEFAULT_MS;
+    (void)duration_ms;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    room_pin_from_code(s_room_code, s_pair_pin);
-    s_pair_expires_us = esp_timer_get_time() + (int64_t)duration_ms * 1000;
-    ESP_LOGI(TAG, "Pairing PIN for room %s is %s", s_room_code, s_pair_pin);
+    refresh_pair_pin_locked();
+    ESP_LOGI(TAG, "Pairing always on for room %s with PIN %s", s_room_code, s_pair_pin);
     xSemaphoreGive(s_lock);
     return ESP_OK;
 }
@@ -699,27 +692,19 @@ void source_udp_control_disable_pairing(void)
 {
     if (!s_lock) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_pair_pin[0] = '\0';
-    s_pair_expires_us = 0;
+    refresh_pair_pin_locked();
     xSemaphoreGive(s_lock);
 }
 
 bool source_udp_control_get_pairing_pin(char out[7], uint32_t *remaining_ms)
 {
     if (!out || !s_lock) return false;
-    bool active = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    int64_t remain_us = s_pair_expires_us - esp_timer_get_time();
-    active = s_pair_pin[0] != '\0' && remain_us > 0;
-    if (active) {
-        memcpy(out, s_pair_pin, 7);
-        if (remaining_ms) *remaining_ms = (uint32_t)(remain_us / 1000);
-    } else {
-        out[0] = '\0';
-        if (remaining_ms) *remaining_ms = 0;
-    }
+    refresh_pair_pin_locked();
+    memcpy(out, s_pair_pin, 7);
+    if (remaining_ms) *remaining_ms = UINT32_MAX;
     xSemaphoreGive(s_lock);
-    return active;
+    return true;
 }
 
 int source_udp_control_get_authorized_clients(source_authorized_client_view_t *out, int max_clients)
