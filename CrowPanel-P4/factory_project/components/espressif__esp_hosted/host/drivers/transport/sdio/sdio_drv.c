@@ -194,6 +194,20 @@ static uint32_t sdio_tx_buf_count = 0;
 /* Counter to hold the amount of bytes already received from sdio slave */
 static uint32_t sdio_rx_byte_count = 0;
 
+/* Counter of SDIO reads that were silently dropped because the host-side
+ * double-buffer hand-off slot was still occupied by sdio_data_to_rx_buf_task.
+ * Exported via hosted_get_sdio_rx_drop_count() so the application can surface
+ * it in its own diagnostic log — the raw ESP_LOGE inside sdio_read_task is
+ * filtered out by the default log level and is also too spammy when this
+ * race fires in a burst. See the else branch of the double_buf check around
+ * line 1250. */
+static volatile uint32_t sdio_double_buf_drops = 0;
+
+uint32_t hosted_get_sdio_double_buf_drops(void)
+{
+	return sdio_double_buf_drops;
+}
+
 // one-time trigger to start write thread
 static bool sdio_start_write_thread = false;
 
@@ -1245,9 +1259,17 @@ static void sdio_read_task(void const* pvParameters)
 			// trigger task to copy data to queue
 			g_h.funcs->_h_post_semaphore(sem_double_buf_xfer_data);
 		} else {
-			// error: task to copy data to queue still running
+			/* SILENT DROP: sdio_data_to_rx_buf_task hasn't finished
+			 * processing the previous buffer yet, so we can't hand
+			 * off the new data. In streaming mode sdio_rx_free_buffer
+			 * is a no-op, so the bytes we just CMD53'd off the slave
+			 * are now lost — the slave thinks delivery succeeded and
+			 * won't retry. Track this in a counter the app can read
+			 * so the audio glitch log surfaces it; suppress the
+			 * ESP_LOGE because it spams during bursts and the log
+			 * write itself can extend the race window. */
+			sdio_double_buf_drops++;
 			sdio_rx_free_buffer(rxbuff);
-			ESP_LOGE(TAG, "task still writing Rx data to queue!");
 			// don't send data to task, or update write_index
 		}
 	}

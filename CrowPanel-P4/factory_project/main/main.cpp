@@ -85,7 +85,7 @@ static void start_c6_init_task(void)
     // Launch C6 initialization in background task so display isn't blocked.
     // IMPORTANT: Do not initialize espnow_sink before OTA slave checks, because both
     // paths use ESP-Hosted internals and early concurrent init can trip hosted memcpy asserts.
-    xTaskCreate([](void *) {
+    xTaskCreatePinnedToCore([](void *) {
         bool sink_ready = false;
 
         /* NOTE: the previous "fast-path" that called espnow_sink_init() and
@@ -161,7 +161,7 @@ static void start_c6_init_task(void)
         ESP_LOGI("c6_init", "C6 init flow complete — WiFi stack is now allowed to start");
 
         vTaskDelete(NULL);
-    }, "c6_init", 8192, NULL, 5, NULL);
+    }, "c6_init", 8192, NULL, 5, NULL, 0);
 }
 
 /*
@@ -555,7 +555,15 @@ extern "C" void app_main(void)
         if (ret != 0) {
             ESP_LOGW(TAG, "esp_hosted_connect_to_slave returned %d (continuing)", ret);
         }
+
     }
+    /* NOTE: ESP-Hosted SDIO thread → core 0 affinity is applied directly
+     * in components/espressif__esp_hosted/host/port/esp/freertos/src/port_esp_hosted_host_os.c
+     * (hosted_thread_create matches on the SDIO thread names and uses
+     * xTaskCreatePinnedToCore(... , 0)). It has to be done at creation
+     * time because this IDF FreeRTOS doesn't expose a runtime
+     * vTaskCoreAffinitySet API. See the rationale comment there for why
+     * the SDIO threads need their own core away from playback_task. */
 
     s_screen_timeout_s = load_screen_timeout_from_nvs();
     s_ui_theme_id = load_ui_theme_from_nvs();

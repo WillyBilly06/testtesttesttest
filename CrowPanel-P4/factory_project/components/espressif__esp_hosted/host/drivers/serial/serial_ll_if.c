@@ -17,7 +17,15 @@ DEFINE_LOG_TAG(serial_ll);
 
 /** Macros / Constants **/
 #define MAX_SERIAL_INTF                   2
-#define TO_SERIAL_INFT_QUEUE_SIZE         10
+/* Was 10 — this is the serial RX queue between serial_ll_rx_handler
+ * (called from sdio_process_rx_task) and the RPC consumer thread
+ * (rpc_rx_thread → rpc_evt_custom → on_evt_audio). At 125 audio pkts/s
+ * a 10-deep queue gives only 80 ms of buffer before the producer side
+ * blocks; if rpc_rx_thread is preempted (LVGL frame, NVS commit, web
+ * UI, etc.) for longer than that, the whole SDIO RX chain stalls and
+ * the C6's SDIO TX mempool backs up — which on the C6 side IS a
+ * silent drop point. Bumped to 32 so the P4 has ~250 ms of buffer. */
+#define TO_SERIAL_INFT_QUEUE_SIZE         32
 
 typedef enum {
 	INIT,
@@ -317,6 +325,37 @@ int serial_ll_rx_handler(interface_buffer_handle_t * buf_handle)
 		return 0;
 	}
 
+	/* FAST PATH: most RPC messages — and 100 % of our audio packets —
+	 * arrive as a single SDIO chunk with MORE_FRAGMENT clear AND with
+	 * no leftover accumulator from previous fragments (r.len == 0,
+	 * r.data == NULL). In that case the original code allocated
+	 * `r.data`, memcpy'd the payload, allocated `serial_buf`, memcpy'd
+	 * again, and freed `r.data` — TWO mallocs + TWO memcpys + ONE
+	 * free per packet, which at our ~125 audio packets/s is ~500 heap
+	 * ops/s and a major fragmentation source on the P4 host. Each one
+	 * is also a potential stall during flash-cache-disable events.
+	 *
+	 * Skip all of that: just allocate one buffer the right size,
+	 * memcpy the payload once, hand off. The SLOW PATH (fragmented
+	 * messages, which we never send on the audio channel) keeps the
+	 * old realloc+free behavior. */
+	if (r.len == 0 && r.data == NULL) {
+		serial_buf = (uint8_t *)g_h.funcs->_h_malloc(buf_handle->payload_len);
+		if (!serial_buf) {
+			ESP_LOGE(TAG, "Malloc failed, drop pkt");
+			goto serial_buff_cleanup;
+		}
+		g_h.funcs->_h_memcpy(serial_buf, buf_handle->payload, buf_handle->payload_len);
+
+		new_buf_handle.if_type = ESP_SERIAL_IF;
+		new_buf_handle.if_num = buf_handle->if_num;
+		new_buf_handle.payload_len = buf_handle->payload_len;
+		new_buf_handle.payload = serial_buf;
+		new_buf_handle.priv_buffer_handle = serial_buf;
+		new_buf_handle.free_buf_handle = g_h.funcs->_h_free;
+		goto enqueue_and_notify;
+	}
+
 	SERIAL_ALLOC_REALLOC_RDATA();
 
 	/* No or last fragment */
@@ -345,6 +384,8 @@ int serial_ll_rx_handler(interface_buffer_handle_t * buf_handle)
 	r.len = 0;
 	g_h.funcs->_h_free(r.data);
 	r.data = NULL;
+
+enqueue_and_notify:
 
 	ESP_LOGV(TAG, "before ENQ for ll_read");
 	/* send to serial queue */

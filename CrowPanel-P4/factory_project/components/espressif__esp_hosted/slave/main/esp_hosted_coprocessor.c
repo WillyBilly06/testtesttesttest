@@ -72,7 +72,12 @@ static const char *TAG = "co-pro-main";
 
 #define UNKNOWN_RPC_MSG_ID               0
 
-#define TO_HOST_QUEUE_SIZE               10
+/* Was 10 — at 125 audio packets/s that's only 80 ms of backpressure
+ * tolerance before the chain from audio_forward_task → sdio_send →
+ * pserial_task → send_to_host_queue starts blocking. Bumped to 32 so
+ * a transient ~250 ms stall on the SDIO bus (P4 doing LVGL, web UI,
+ * NVS, etc.) doesn't ripple back up to the audio path. */
+#define TO_HOST_QUEUE_SIZE               32
 
 #define ETH_DATA_LEN                     1500
 #define MAX_WIFI_STA_TX_RETRY            2
@@ -504,12 +509,12 @@ void send_event_to_host(int event_id)
 	protocomm_pserial_data_ready(pc_pserial, NULL, 0, event_id);
 }
 
-void send_event_data_to_host(int event_id, void *data, int size)
+esp_err_t send_event_data_to_host(int event_id, void *data, int size)
 {
 #if ESP_PKT_STATS
 	pkt_stats.serial_tx_evt++;
 #endif
-	protocomm_pserial_data_ready(pc_pserial, data, size, event_id);
+	return protocomm_pserial_data_ready(pc_pserial, data, size, event_id);
 }
 
 static void process_serial_rx_pkt(uint8_t *buf)

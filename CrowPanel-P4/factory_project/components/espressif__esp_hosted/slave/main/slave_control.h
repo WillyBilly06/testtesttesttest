@@ -207,7 +207,12 @@ esp_err_t data_transfer_handler(uint32_t session_id,const uint8_t *inbuf,
 esp_err_t rpc_evt_handler(uint32_t session_id,const uint8_t *inbuf,
 		ssize_t inlen, uint8_t **outbuf, ssize_t *outlen, void *priv_data);
 void send_event_to_host(int event_id);
-void send_event_data_to_host(int event_id, void *data, int size);
+/* Returns ESP_OK on success or ESP_FAIL if the inner
+ * protocomm_pserial_data_ready() failed (malloc fail / req_queue full).
+ * Was previously void, which silently swallowed every failure — the
+ * audio-bridge path then reported sdio_err=0 even when packets were
+ * lost between sdio_send() and the wire. */
+esp_err_t send_event_data_to_host(int event_id, void *data, int size);
 
 #ifdef CONFIG_ESP_HOSTED_ENABLE_PEER_DATA_TRANSFER
 #include "esp_hosted_peer_data.h"

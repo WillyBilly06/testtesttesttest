@@ -3,16 +3,70 @@ CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ── Silicon revision ─────────────────────────────────────────────────
+# WROVER-IE ships with ESP32-D0WD-V3 (rev v3.x). Setting REV_MIN_3
+# disables the DPORT bus-arbitration workaround entirely. That workaround
+# (esp_ipc_isr_stall_other_cpu) is the dominant source of brief Core 1
+# stalls while Wi-Fi runs on Core 0 — it busy-spins the *other* CPU
+# whenever the Wi-Fi/PHY library touches DPORT, which is constant during
+# active streaming. Removing it is the single biggest jitter win.
+CONFIG_ESP32_REV_MIN_3=y
+
+# ── Wi-Fi buffers / IRAM ─────────────────────────────────────────────
 CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM=0
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+# For ESP-NOW broadcast we have no real TCP session — AMPDU and a deep
+# Block-Ack window just add MAC ISR / DPORT overhead with zero benefit.
+# Disabling them measurably reduces MAC-ISR rate.
+# CONFIG_ESP_WIFI_AMPDU_TX_ENABLED is not set
+# CONFIG_ESP_WIFI_AMPDU_RX_ENABLED is not set
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_ESP_WIFI_IRAM_OPT=y
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+# We use esp_wifi_set_storage(WIFI_STORAGE_RAM), so the Wi-Fi NVS namespace
+# would never be written at runtime; disable the driver hook entirely so
+# nothing in the Wi-Fi stack can pull in spi_flash ops behind our back.
+# CONFIG_ESP_WIFI_NVS_ENABLED is not set
+
+# ── PHY ──────────────────────────────────────────────────────────────
+# Partial RF cal on each Wi-Fi enable (mode 1). Full cal (mode 0) takes
+# ~100 ms and triggers an NVS write — that flash op disables flash AND
+# PSRAM caches for several ms across both cores. Partial cal is a few
+# ms and no NVS write in steady state.
+CONFIG_ESP_PHY_CALIBRATION_MODE=1
+
+# ── lwIP ─────────────────────────────────────────────────────────────
+CONFIG_LWIP_IRAM_OPTIMIZATION=y
+# Pin the TCP/IP thread to Core 0. Default "NO_AFFINITY" lets lwIP
+# preempt audio tasks on Core 1 every time the Web UI is touched.
+# CONFIG_LWIP_TCPIP_TASK_AFFINITY_NO_AFFINITY is not set
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY=0x0
+# CONFIG_LWIP_ESP_GRATUITOUS_ARP is not set
+# CONFIG_LWIP_ESP_MLDV6_REPORT is not set
+
+# ── PSRAM ────────────────────────────────────────────────────────────
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# ── Clocks / scheduler ───────────────────────────────────────────────
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
 CONFIG_PM_ENABLE=n
 CONFIG_FREERTOS_HZ=1000
+
+# ── Task watchdog ────────────────────────────────────────────────────
+# Don't watchdog Core 1 idle — when audio tasks (prio 22-24) are doing
+# their job the Core 1 idle task barely runs, which is correct, not a
+# bug. Core 0 idle still gets the WDT to catch real hangs.
+# CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1 is not set
+
 # CONFIG_COMPILER_OPTIMIZATION_DEBUG is not set
 # CONFIG_COMPILER_OPTIMIZATION_SIZE is not set
 CONFIG_ROOM_AUDIO_ROOM_ID="A10-0001"
 CONFIG_ROOM_AUDIO_LC3_BITRATE=31200
-CONFIG_ROOM_AUDIO_PHY_RATE_MCS3=y
+CONFIG_ROOM_AUDIO_PHY_RATE_DSSS5M=y

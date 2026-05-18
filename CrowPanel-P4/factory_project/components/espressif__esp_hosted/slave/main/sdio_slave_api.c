@@ -49,6 +49,29 @@ interface_handle_t if_handle_g;
 static const char *TAG = "SDIO_SLAVE";
 static uint8_t hosted_constructs_created = 0;
 
+/* Counter for silent drops in the slave SDIO TX path. Every failure path
+ * inside sdio_write() bumps this — mempool exhaustion (host stopped
+ * servicing SDIO long enough for our buffer pool to drain), semaphore
+ * acquisition failure, the driver's own send_queue returning non-OK,
+ * the interface being inactive, or the host being in power-save while
+ * we have data queued. Before this counter existed, all of those paths
+ * just printed ESP_LOGE and silently dropped the packet — the caller
+ * (process_tx_pkt) didn't even check the return value of if_ops->write,
+ * so the application layer had zero visibility into how many audio
+ * packets were actually being lost between C6 sdio_send() and the P4
+ * receiver. The C6 stats task reads this and surfaces it to the P4 in
+ * the periodic ESPNOW_MSG_EVT_STATS event (see espnow_evt_stats_t
+ * v3 field sdio_tx_silent_drops).
+ *
+ * Reads/writes are non-atomic but a torn read just produces slightly
+ * stale telemetry once per emit — fine for diagnostics. */
+static volatile uint32_t s_sdio_tx_silent_drops = 0;
+
+uint32_t sdio_slave_get_tx_silent_drops(void)
+{
+	return s_sdio_tx_silent_drops;
+}
+
 #if !SIMPLIFIED_SDIO_SLAVE
 static SemaphoreHandle_t sdio_rx_sem;
 static QueueHandle_t sdio_rx_queue[MAX_PRIORITY_QUEUES];
@@ -522,21 +545,25 @@ static int32_t sdio_write(interface_handle_t *handle, interface_buffer_handle_t 
 
 	if (!handle || !buf_handle) {
 		ESP_LOGE(TAG , "Invalid arguments");
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 
 	if (handle->state < ACTIVE) {
 		ESP_LOGI(TAG, "Driver state not active, drop");
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 
 	if (is_host_power_saving()) {
 		ESP_LOGI(TAG, "Host sleeping, drop");
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 
 	if (!buf_handle->payload_len && !buf_handle->payload && !buf_handle->flag) {
 		ESP_LOGW(TAG , "Invalid arguments, len:%d, payload:%p, flag:%d, drop", buf_handle->payload_len, buf_handle->payload, buf_handle->flag);
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 
@@ -545,6 +572,7 @@ static int32_t sdio_write(interface_handle_t *handle, interface_buffer_handle_t 
 	sendbuf = sdio_buffer_tx_alloc(total_len, MEMSET_REQUIRED);
 	if (sendbuf == NULL) {
 		ESP_LOGE(TAG, "send buffer[%"PRIu32"] malloc fail", total_len);
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 
@@ -556,6 +584,7 @@ static int32_t sdio_write(interface_handle_t *handle, interface_buffer_handle_t 
 #if !SIMPLIFIED_SDIO_SLAVE
 	if (xSemaphoreTake(sdio_send_queue_sem, portMAX_DELAY) != pdTRUE) {
 		sdio_buffer_tx_free(sendbuf);
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 	ret = sdio_slave_send_queue(sendbuf, total_len, sendbuf, portMAX_DELAY);
@@ -568,6 +597,7 @@ static int32_t sdio_write(interface_handle_t *handle, interface_buffer_handle_t 
 		xSemaphoreGive(sdio_send_queue_sem);
 #endif
 		sdio_buffer_tx_free(sendbuf);
+		s_sdio_tx_silent_drops++;
 		return ESP_FAIL;
 	}
 

@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Net;
-using System.Net.Sockets;
 using WindowsRoomReceiver.Models;
 using WindowsRoomReceiver.Security;
 
@@ -12,8 +11,16 @@ public sealed class AuthClient : IDisposable
 {
     private readonly SecureCredentialStore _store;
     private readonly byte[] _clientId;
-    private UdpClient? _control;
+    private RoomControlChannel? _control;
     private CancellationTokenSource? _heartbeatCts;
+
+    /// <summary>
+    /// Raised when several consecutive heartbeats fail to send. Listeners
+    /// should treat this as a hint to attempt a re-join — the link is NOT
+    /// torn down here, audio sockets stay open, and the user remains on
+    /// the "Connected" experience until they explicitly Disconnect.
+    /// </summary>
+    public event Action<string>? HeartbeatTrouble;
 
     public AuthClient(SecureCredentialStore store)
     {
@@ -25,12 +32,10 @@ public sealed class AuthClient : IDisposable
     {
         byte[]? clientKey = _store.LoadClientAuthKey(room.SourceId);
         if (clientKey == null) throw new InvalidOperationException("This room must be paired before connecting.");
-        NetworkInterfaceSelection local = ResolveLocalAdapter(room);
+        ResolveLocalAdapter(room);
         _control?.Dispose();
-        _control = UdpSocketUtil.CreateUnboundUdp();
-        UdpClient control = _control;
+        _control = null;
         IPEndPoint remote = RoomProtocol.Endpoint(room.SourceIp, room.ControlPort);
-        UdpSocketUtil.ConnectUdp(control, remote);
 
         byte[] hello = new byte[88];
         BinaryPrimitives.WriteUInt32LittleEndian(hello.AsSpan(0, 4), RoomProtocol.Magic);
@@ -51,28 +56,38 @@ public sealed class AuthClient : IDisposable
 
         for (int attempt = 0; attempt < 4; ++attempt)
         {
-            await UdpSocketUtil.SendToAsync(control, hello, remote, ct);
-            UdpReceiveResult? result = await UdpSocketUtil.ReceiveWithTimeoutAsync(control, TimeSpan.FromMilliseconds(700), ct);
-            byte[]? accept = result?.Buffer;
-            if (accept is null) continue;
-            if (RoomProtocol.HasValidHeader(accept, RoomProtocol.JoinReject)) throw new UnauthorizedAccessException("Source rejected authentication.");
-            if (!RoomProtocol.HasValidHeader(accept, RoomProtocol.JoinAccept) || accept.Length != 168) continue;
-            if (!accept.AsSpan(8, 16).SequenceEqual(room.SourceId)) continue;
-            if (!accept.AsSpan(57, 16).SequenceEqual(nonce)) continue;
-            byte[] tagCopy = accept.ToArray();
-            Array.Clear(tagCopy, 152, 16);
-            if (!CryptoUtil.FixedEquals(CryptoUtil.Cmac(clientKey, tagCopy), accept.AsSpan(152, 16)))
-                throw new UnauthorizedAccessException("JOIN_ACCEPT authentication failed.");
-            byte[] sessionKey = CryptoUtil.AesCtr(clientKey, accept.AsSpan(89, 16).ToArray(), accept.AsSpan(105, 32));
-            uint streamId = BinaryPrimitives.ReadUInt32LittleEndian(accept.AsSpan(33, 4));
-            uint sessionId = BinaryPrimitives.ReadUInt32LittleEndian(accept.AsSpan(37, 4));
-            uint startSeq = BinaryPrimitives.ReadUInt32LittleEndian(accept.AsSpan(148, 4));
-            int frameBytes = BinaryPrimitives.ReadUInt16LittleEndian(accept.AsSpan(146, 2));
-            int channels = accept[142];
-            StartHeartbeat(room, clientKey, sessionId);
-            return new AudioSession(sessionKey, streamId, sessionId, startSeq, frameBytes, channels);
+            var channel = new RoomControlChannel(remote);
+            bool keep = false;
+            try
+            {
+                await channel.SendAsync(hello, ct);
+                byte[]? accept = await channel.ReceiveAsync(TimeSpan.FromMilliseconds(700), ct);
+                if (accept is null) continue;
+                if (RoomProtocol.HasValidHeader(accept, RoomProtocol.JoinReject)) throw new UnauthorizedAccessException("Source rejected authentication. Try un-pairing and pairing again.");
+                if (!RoomProtocol.HasValidHeader(accept, RoomProtocol.JoinAccept) || accept.Length != 168) continue;
+                if (!accept.AsSpan(8, 16).SequenceEqual(room.SourceId)) continue;
+                if (!accept.AsSpan(57, 16).SequenceEqual(nonce)) continue;
+                byte[] tagCopy = accept.ToArray();
+                Array.Clear(tagCopy, 152, 16);
+                if (!CryptoUtil.FixedEquals(CryptoUtil.Cmac(clientKey, tagCopy), accept.AsSpan(152, 16)))
+                    throw new UnauthorizedAccessException("JOIN_ACCEPT authentication failed.");
+                byte[] sessionKey = CryptoUtil.AesCtr(clientKey, accept.AsSpan(89, 16).ToArray(), accept.AsSpan(105, 32));
+                uint streamId = BinaryPrimitives.ReadUInt32LittleEndian(accept.AsSpan(33, 4));
+                uint sessionId = BinaryPrimitives.ReadUInt32LittleEndian(accept.AsSpan(37, 4));
+                uint startSeq = BinaryPrimitives.ReadUInt32LittleEndian(accept.AsSpan(148, 4));
+                int frameBytes = BinaryPrimitives.ReadUInt16LittleEndian(accept.AsSpan(146, 2));
+                int channels = accept[142];
+                _control = channel;
+                keep = true;
+                StartHeartbeat(room, clientKey, sessionId);
+                return new AudioSession(sessionKey, streamId, sessionId, startSeq, frameBytes, channels);
+            }
+            finally
+            {
+                if (!keep) channel.Dispose();
+            }
         }
-        throw new TimeoutException("No JOIN_ACCEPT received from source.");
+        throw new TimeoutException("No response from source while joining the room.");
     }
 
     public async Task LeaveAsync(RoomSource room, AudioSession session)
@@ -93,15 +108,36 @@ public sealed class AuthClient : IDisposable
     {
         _heartbeatCts?.Cancel();
         _heartbeatCts = new CancellationTokenSource();
+        CancellationToken ct = _heartbeatCts.Token;
         _ = Task.Run(async () =>
         {
             uint counter = 0;
-            while (!_heartbeatCts.IsCancellationRequested)
+            int consecutiveFailures = 0;
+            while (!ct.IsCancellationRequested)
             {
-                await SendControlAsync(room, key, sessionId, RoomProtocol.Heartbeat, ++counter, _heartbeatCts.Token);
-                await Task.Delay(TimeSpan.FromSeconds(2), _heartbeatCts.Token);
+                try
+                {
+                    await SendControlAsync(room, key, sessionId, RoomProtocol.Heartbeat, ++counter, ct);
+                    consecutiveFailures = 0;
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    consecutiveFailures++;
+                    if (consecutiveFailures == 3 || consecutiveFailures % 8 == 0)
+                    {
+                        // Notify upper layer so it can trigger a re-join.
+                        // Keep retrying heartbeats forever in the meantime —
+                        // the user explicitly stays connected until they
+                        // press Disconnect.
+                        HeartbeatTrouble?.Invoke($"Heartbeat to source is failing ({ex.GetType().Name}).");
+                    }
+                }
+
+                try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
+                catch (OperationCanceledException) { return; }
             }
-        }, _heartbeatCts.Token);
+        }, ct);
     }
 
     private async Task SendControlAsync(RoomSource room, byte[] key, uint sessionId, byte type, uint counter, CancellationToken ct)
@@ -117,10 +153,8 @@ public sealed class AuthClient : IDisposable
         _clientId.CopyTo(packet.AsSpan(37));
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(53, 4), counter);
         CryptoUtil.Cmac(key, packet).CopyTo(packet.AsSpan(57, 16));
-        IPEndPoint remote = RoomProtocol.Endpoint(room.SourceIp, room.ControlPort);
-        if (_control == null)
-            throw new InvalidOperationException("Control socket is not connected.");
-        await UdpSocketUtil.SendToAsync(_control, packet, remote, ct);
+        if (_control == null) throw new InvalidOperationException("Control channel is not connected.");
+        await _control.SendAsync(packet, ct);
     }
 
     public void Dispose()
@@ -135,8 +169,7 @@ public sealed class AuthClient : IDisposable
         if (local == null)
         {
             throw new InvalidOperationException(
-                $"No local network adapter was found on the same subnet as {room.SourceIp}. " +
-                "If using Windows Mobile Hotspot, make sure the ESP32 is connected to the hotspot and the hotspot adapter is active.");
+                $"No local network adapter was found on the same subnet as {room.SourceIp}.");
         }
         room.LocalAdapterIp = local.LocalAddress;
         room.LocalAdapterName = local.AdapterName;

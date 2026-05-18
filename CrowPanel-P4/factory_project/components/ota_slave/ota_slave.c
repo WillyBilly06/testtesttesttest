@@ -205,14 +205,28 @@ static esp_err_t load_stored_version(char *version, size_t len)
 // Save version to NVS
 static esp_err_t save_stored_version(const char *version)
 {
+    if (!version || version[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
     nvs_handle_t nvs;
     esp_err_t ret = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
     if (ret != ESP_OK) return ret;
 
-    ret = nvs_set_str(nvs, NVS_KEY_FW_VERSION, version);
-    if (ret == ESP_OK) {
-        ret = nvs_commit(nvs);
+    char current[32] = {0};
+    size_t current_len = sizeof(current);
+    esp_err_t get_ret = nvs_get_str(nvs, NVS_KEY_FW_VERSION, current, &current_len);
+    if (get_ret == ESP_OK && strcmp(current, version) == 0) {
+        nvs_close(nvs);
+        return ESP_OK;
     }
+    if (get_ret != ESP_OK && get_ret != ESP_ERR_NVS_NOT_FOUND) {
+        nvs_close(nvs);
+        return get_ret;
+    }
+
+    ret = nvs_set_str(nvs, NVS_KEY_FW_VERSION, version);
+    if (ret == ESP_OK) ret = nvs_commit(nvs);
     nvs_close(nvs);
     return ret;
 }

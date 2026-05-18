@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.Net;
-using System.Net.Sockets;
 using WindowsRoomReceiver.Models;
 using WindowsRoomReceiver.Security;
 
@@ -20,7 +19,7 @@ public sealed class PairingService
     public async Task PairAsync(RoomSource room, string pin, string clientName, CancellationToken ct)
     {
         if (pin.Length != 6 || !pin.All(char.IsDigit)) throw new InvalidOperationException("Enter the 6-digit pairing PIN.");
-        NetworkInterfaceSelection local = ResolveLocalAdapter(room);
+        ResolveLocalAdapter(room);
         byte[] pinKey = CryptoUtil.DerivePinKey(room.SourceId, pin);
         byte[] packet = new byte[113];
         BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(0, 4), RoomProtocol.Magic);
@@ -35,21 +34,21 @@ public sealed class PairingService
         nonce.CopyTo(packet.AsSpan(81));
         CryptoUtil.Cmac(pinKey, packet).CopyTo(packet.AsSpan(97));
 
-        using var udp = UdpSocketUtil.CreateUnboundUdp();
         IPEndPoint remote = RoomProtocol.Endpoint(room.SourceIp, room.ControlPort);
-        UdpSocketUtil.ConnectUdp(udp, remote);
         for (int attempt = 0; attempt < 3; ++attempt)
         {
-            await UdpSocketUtil.SendToAsync(udp, packet, remote, ct);
-            UdpReceiveResult? result = await UdpSocketUtil.ReceiveWithTimeoutAsync(udp, TimeSpan.FromMilliseconds(1200), ct);
-            byte[]? response = result?.Buffer;
+            using var channel = new RoomControlChannel(remote);
+            await channel.SendAsync(packet, ct);
+            byte[]? response = await channel.ReceiveAsync(TimeSpan.FromMilliseconds(1200), ct);
             if (response is null) continue;
-            if (RoomProtocol.HasValidHeader(response, RoomProtocol.PairReject)) throw new InvalidOperationException("Source rejected pairing. Check that pairing mode is enabled and the PIN is correct.");
+            if (RoomProtocol.HasValidHeader(response, RoomProtocol.PairReject))
+                throw new InvalidOperationException("Source rejected pairing. Check that the PIN matches the room code on the source Web UI.");
             if (!RoomProtocol.HasValidHeader(response, RoomProtocol.PairAccept) || response.Length != 145) continue;
             byte[] authCopy = response.ToArray();
             Array.Clear(authCopy, 129, 16);
             byte[] expected = CryptoUtil.Cmac(pinKey, authCopy);
-            if (!CryptoUtil.FixedEquals(expected, response.AsSpan(129, 16))) throw new InvalidOperationException("Pairing response authentication failed.");
+            if (!CryptoUtil.FixedEquals(expected, response.AsSpan(129, 16)))
+                throw new InvalidOperationException("Pairing response authentication failed. The PIN may be incorrect.");
             byte[] wrappedKey = response.AsSpan(97, 32).ToArray();
             byte[] wrapNonce = response.AsSpan(81, 16).ToArray();
             byte[] clientAuthKey = CryptoUtil.AesCtr(pinKey, wrapNonce, wrappedKey);
@@ -66,7 +65,7 @@ public sealed class PairingService
             _store.SavePairedSources(sources);
             return;
         }
-        throw new TimeoutException("Pairing timed out. Make sure the source is still in pairing mode.");
+        throw new TimeoutException("The source did not respond. Make sure it is on the same Wi-Fi network and try again.");
     }
 
     private static NetworkInterfaceSelection ResolveLocalAdapter(RoomSource room)
@@ -75,8 +74,8 @@ public sealed class PairingService
         if (local == null)
         {
             throw new InvalidOperationException(
-                $"No local network adapter was found on the same subnet as {room.SourceIp}. " +
-                "If using Windows Mobile Hotspot, make sure the ESP32 is connected to the hotspot and the hotspot adapter is active.");
+                $"No local network adapter found on the same subnet as {room.SourceIp}. " +
+                "If using Windows Mobile Hotspot, make sure the ESP32 is connected to the hotspot.");
         }
         room.LocalAdapterIp = local.LocalAddress;
         room.LocalAdapterName = local.AdapterName;

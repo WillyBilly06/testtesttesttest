@@ -14,10 +14,13 @@ config ROOM_AUDIO_LC3_BITRATE
 
 choice ROOM_AUDIO_PHY_RATE
     prompt "ESP-NOW audio PHY rate"
-    default ROOM_AUDIO_PHY_RATE_MCS3
+    default ROOM_AUDIO_PHY_RATE_DSSS5M
     help
-        Select the broadcast ESP-NOW PHY rate. MCS3 gives low airtime
-        nearby, while MCS1/MCS2 or OFDM can be tested for longer range.
+        Select the broadcast ESP-NOW PHY rate. DSSS 5.5 Mbps is the
+        long-range profile for the reduced 249-byte SBC packets. There
+        is no standard ESP-NOW 3 Mbps or 4 Mbps PHY; the next lower rates
+        are 2 Mbps and 1 Mbps, which are too airtime-heavy for four-copy
+        low-latency audio.
 
 config ROOM_AUDIO_PHY_RATE_MCS1
     bool "MCS1 HT20 long GI"
@@ -34,6 +37,29 @@ config ROOM_AUDIO_PHY_RATE_OFDM6
 config ROOM_AUDIO_PHY_RATE_OFDM12
     bool "OFDM 12 Mbps"
 
+config ROOM_AUDIO_PHY_RATE_DSSS5M
+    bool "DSSS 5.5 Mbps long preamble"
+
 endchoice
+
+config ROOM_AUDIO_FIXED_CHANNEL
+    int "Force ESP-NOW broadcast on a fixed 2.4 GHz channel"
+    range 0 13
+    default 0
+    help
+        When set to 0 (default), the source connects to the saved Wi-Fi
+        network via STA and inherits its channel for ESP-NOW broadcast.
+        When set to 1-13, the source SKIPS the STA join entirely, stays
+        in setup-AP-only mode on this channel, and broadcasts ESP-NOW
+        on it. Use this to dodge a congested channel that you cannot
+        change on the upstream router/hotspot — e.g. set to 11 to move
+        off the typically-overloaded channel 1.
+
+        The Web UI is then accessible only via the setup AP
+        (SSID "CP-ROOM-SOURCE-SETUP", password "configure123"), since
+        the single radio cannot be on two channels simultaneously.
+
+        The sink autoscan covers channels {1, 6, 11}, so for the source
+        to be discoverable without sink changes, pick 1, 6, or 11.
 
 endmenu

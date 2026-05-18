@@ -172,6 +172,89 @@ void *hosted_thread_create(const char *tname, uint32_t tprio, uint32_t tstack_si
 		return NULL;
 	}
 
+	/* Real-time pinning AND priority adjustment for the SDIO transport
+	 * hot-path threads.
+	 *
+	 * --- Why pin to core 0 ---
+	 * By default this port creates every ESP-Hosted thread with
+	 * xTaskCreate (unpinned). On the P4 sink app that's a problem: the
+	 * audio playback pipeline (audio_rx_task @ prio 24,
+	 * playback_task @ prio 23) lives on core 1, and when the SDIO
+	 * threads land there they fight playback at the same priority.
+	 * Pin all four SDIO transport threads to core 0 so SDIO RX/TX
+	 * never preempts (and is never preempted by) playback on core 1.
+	 *
+	 * --- Why bump sdio_rx_buf above the others ---
+	 * The host SDIO RX pipeline has a SINGLE-SLOT hand-off between
+	 * sdio_read_task and sdio_data_to_rx_buf_task. See sdio_drv.c
+	 * around line 1241: when sdio_read_task gets a new SDIO interrupt
+	 * but the previous buffer still hasn't been processed by
+	 * sdio_data_to_rx_buf_task (double_buf.read_index >= 0), the
+	 * incoming data is SILENTLY DROPPED — the only trace is an
+	 * ESP_LOGE("task still writing Rx data to queue!") line that we
+	 * never see because logs at INFO are filtered downstream.
+	 *
+	 * With every thread at the default priority and pinned to the
+	 * same core, FreeRTOS round-robins between them; if sdio_read
+	 * runs ahead of sdio_rx_buf for even one quantum the next SDIO
+	 * interrupt arrives before rx_buf has drained the hand-off slot.
+	 * That's exactly the failure mode the user is seeing in the audio
+	 * glitch log as `late=N` drops with no SDIO error count from the C6.
+	 *
+	 * Bumping sdio_rx_buf to DFLT+1 (24) makes it strictly higher than
+	 * sdio_read (23), so the moment sdio_read posts its sem, rx_buf
+	 * preempts and drains the slot. By the time rx_buf yields and
+	 * sdio_read can loop back to wait on the next INT, the slot is
+	 * always free — no drops.
+	 *
+	 * rx_buf at 24 equals audio_rx_task at 24, but they're never both
+	 * actively ready: rx_buf only runs on sem-post (a few µs per
+	 * packet), then sleeps; audio_rx_task only runs when on_evt_audio
+	 * has queued a packet. Same-prio round-robin between two
+	 * almost-always-idle tasks is a no-op.
+	 *
+	 * The other three threads stay at DFLT_TASK_PRIO. */
+	/* Pinning + priority overrides for ESP-Hosted hot-path threads.
+	 *
+	 * On the P4 sink app the audio playback pipeline lives on core 1
+	 * (audio_rx_task @ 24, playback_task @ 23). EVERY ESP-Hosted thread
+	 * that is involved in moving an audio packet from the C6 to
+	 * on_evt_audio() must be pinned to core 0 so it never competes
+	 * with playback on core 1. The chain is:
+	 *
+	 *   sdio_read       → double_buf
+	 *   sdio_rx_buf     → from_slave_queue       (HIGHER prio - drain race)
+	 *   sdio_process_rx → serial_ll queue
+	 *   rpc_rx          → protobuf decode → on_evt_audio  (HIGHER prio)
+	 *
+	 * sdio_rx_buf gets +1 because of the single-slot hand-off race
+	 * documented in sdio_drv.c::sdio_read_task. rpc_rx gets +1 because
+	 * if it falls behind by even one quantum, audio packets pile up in
+	 * the serial_ll queue and the protobuf decode latency compounds.
+	 *
+	 * rpc_tx + rpc_supp_cb are TX/control plane: pin to core 0 so they
+	 * don't pop over to core 1 and stall playback during their rare
+	 * activity, but keep them at default prio. sdio_write is also TX:
+	 * pin only.
+	 *
+	 * Names matched here are stable in upstream ESP-Hosted. Any thread
+	 * not listed keeps the original unpinned + default-prio behavior. */
+	BaseType_t pin_core = tskNO_AFFINITY;
+	UBaseType_t use_prio = tprio;
+	if (tname) {
+		if (strcmp(tname, "sdio_rx_buf") == 0 ||
+		    strcmp(tname, "rpc_rx")      == 0) {
+			pin_core = 0;
+			use_prio = tprio + 1;
+		} else if (strcmp(tname, "sdio_read")       == 0 ||
+		           strcmp(tname, "sdio_process_rx") == 0 ||
+		           strcmp(tname, "sdio_write")      == 0 ||
+		           strcmp(tname, "rpc_tx")          == 0 ||
+		           strcmp(tname, "rpc_supp_cb")     == 0) {
+			pin_core = 0;
+		}
+	}
+
 #if H_DFLT_TASK_FROM_SPIRAM
 	StaticTask_t *task_buffer = heap_caps_calloc(1, sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
 	if (!task_buffer) {
@@ -188,14 +271,22 @@ void *hosted_thread_create(const char *tname, uint32_t tprio, uint32_t tstack_si
 	}
 
 	task_created = pdTRUE;
-	*thread_handle = xTaskCreateStatic((void (*)(void *))start_routine, tname, tstack_size, sr_arg, tprio, thread_stack, task_buffer);
+	if (pin_core != tskNO_AFFINITY) {
+		*thread_handle = xTaskCreateStaticPinnedToCore((void (*)(void *))start_routine, tname, tstack_size, sr_arg, use_prio, thread_stack, task_buffer, pin_core);
+	} else {
+		*thread_handle = xTaskCreateStatic((void (*)(void *))start_routine, tname, tstack_size, sr_arg, use_prio, thread_stack, task_buffer);
+	}
 	if (!*thread_handle) {
 		heap_caps_free(thread_stack);
 		heap_caps_free(task_buffer);
 		task_created = pdFALSE;
 	}
 #else
-	task_created = xTaskCreate((void (*)(void *))start_routine, tname, tstack_size, sr_arg, tprio, thread_handle);
+	if (pin_core != tskNO_AFFINITY) {
+		task_created = xTaskCreatePinnedToCore((void (*)(void *))start_routine, tname, tstack_size, sr_arg, use_prio, thread_handle, pin_core);
+	} else {
+		task_created = xTaskCreate((void (*)(void *))start_routine, tname, tstack_size, sr_arg, use_prio, thread_handle);
+	}
 #endif
 	if (!(*thread_handle)) {
 		ESP_LOGE(TAG, "Failed to create thread: %s\n", tname);

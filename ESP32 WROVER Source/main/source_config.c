@@ -13,7 +13,6 @@
 #define CFG_NS "src_cfg"
 #define CFG_KEY_ROOM "room"
 #define CFG_KEY_GAIN "gain_x10"
-#define CFG_KEY_UDP "udp_port"
 #define CFG_KEY_SSID "ssid"
 #define CFG_KEY_PASS "pass"
 #define CFG_KEY_PWSET "pw_set"
@@ -104,7 +103,6 @@ esp_err_t source_config_init(const char *default_room_id)
     snprintf(s_cfg.room_id, sizeof(s_cfg.room_id), "%s",
              source_config_room_id_valid(default_room_id) ? default_room_id : "A10-0001");
     s_cfg.gain_db_x10 = 50;
-    s_cfg.udp_port = SOURCE_DEFAULT_UDP_PORT;
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(CFG_NS, NVS_READONLY, &nvs);
@@ -126,11 +124,6 @@ esp_err_t source_config_init(const char *default_room_id)
         s_cfg.gain_db_x10 = gain;
     }
 
-    uint16_t port = 0;
-    if (nvs_get_u16(nvs, CFG_KEY_UDP, &port) == ESP_OK && port != 0) {
-        s_cfg.udp_port = port;
-    }
-
     load_string(nvs, CFG_KEY_SSID, s_cfg.wifi_ssid, sizeof(s_cfg.wifi_ssid));
     load_string(nvs, CFG_KEY_PASS, s_cfg.wifi_pass, sizeof(s_cfg.wifi_pass));
 
@@ -145,8 +138,8 @@ esp_err_t source_config_init(const char *default_room_id)
     }
 
     nvs_close(nvs);
-    ESP_LOGI(TAG, "Loaded config room=%s gain=%.1fdB udp=%u wifi=%s lock=%d",
-             s_cfg.room_id, s_cfg.gain_db_x10 / 10.0, s_cfg.udp_port,
+    ESP_LOGI(TAG, "Loaded config room=%s gain=%.1fdB wifi=%s lock=%d",
+             s_cfg.room_id, s_cfg.gain_db_x10 / 10.0,
              s_cfg.wifi_ssid[0] ? s_cfg.wifi_ssid : "(none)", s_cfg.locked ? 1 : 0);
     return ESP_OK;
 }
@@ -194,6 +187,12 @@ esp_err_t source_config_set_room_id(const char *room_id)
     if (!source_config_room_id_valid(room_id) || source_config_is_locked()) {
         return ESP_ERR_INVALID_ARG;
     }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool changed = strncmp(s_cfg.room_id, room_id, sizeof(s_cfg.room_id)) != 0;
+    xSemaphoreGive(s_mutex);
+    if (!changed) {
+        return ESP_OK;
+    }
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(CFG_NS, NVS_READWRITE, &nvs);
@@ -219,6 +218,13 @@ esp_err_t source_config_set_gain_db_x10(int gain_db_x10)
     if (source_config_is_locked() || gain_db_x10 < -240 || gain_db_x10 > 240) {
         return ESP_ERR_INVALID_ARG;
     }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool changed = s_cfg.gain_db_x10 != gain_db_x10;
+    xSemaphoreGive(s_mutex);
+    if (!changed) {
+        return ESP_OK;
+    }
+
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(CFG_NS, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
@@ -238,30 +244,6 @@ esp_err_t source_config_set_gain_db_x10(int gain_db_x10)
     return err;
 }
 
-esp_err_t source_config_set_udp_port(uint16_t udp_port)
-{
-    if (source_config_is_locked() || udp_port == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(CFG_NS, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nvs_set_u16(nvs, CFG_KEY_UDP, udp_port);
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
-    }
-    nvs_close(nvs);
-    if (err == ESP_OK) {
-        xSemaphoreTake(s_mutex, portMAX_DELAY);
-        s_cfg.udp_port = udp_port;
-        xSemaphoreGive(s_mutex);
-        notify_apply();
-    }
-    return err;
-}
-
 esp_err_t source_config_set_wifi(const char *ssid, const char *pass)
 {
     if (source_config_is_locked() || !ssid || ssid[0] == '\0' ||
@@ -269,6 +251,15 @@ esp_err_t source_config_set_wifi(const char *ssid, const char *pass)
         (pass && strlen(pass) > SOURCE_WIFI_PASS_MAX)) {
         return ESP_ERR_INVALID_ARG;
     }
+    const char *new_pass = pass ? pass : "";
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool changed = strncmp(s_cfg.wifi_ssid, ssid, sizeof(s_cfg.wifi_ssid)) != 0 ||
+                   strncmp(s_cfg.wifi_pass, new_pass, sizeof(s_cfg.wifi_pass)) != 0;
+    xSemaphoreGive(s_mutex);
+    if (!changed) {
+        return ESP_OK;
+    }
+
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(CFG_NS, NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
@@ -276,7 +267,7 @@ esp_err_t source_config_set_wifi(const char *ssid, const char *pass)
     }
     err = save_string(nvs, CFG_KEY_SSID, ssid);
     if (err == ESP_OK) {
-        err = save_string(nvs, CFG_KEY_PASS, pass ? pass : "");
+        err = save_string(nvs, CFG_KEY_PASS, new_pass);
     }
     if (err == ESP_OK) {
         err = nvs_commit(nvs);
@@ -285,7 +276,7 @@ esp_err_t source_config_set_wifi(const char *ssid, const char *pass)
     if (err == ESP_OK) {
         xSemaphoreTake(s_mutex, portMAX_DELAY);
         snprintf(s_cfg.wifi_ssid, sizeof(s_cfg.wifi_ssid), "%s", ssid);
-        snprintf(s_cfg.wifi_pass, sizeof(s_cfg.wifi_pass), "%s", pass ? pass : "");
+        snprintf(s_cfg.wifi_pass, sizeof(s_cfg.wifi_pass), "%s", new_pass);
         xSemaphoreGive(s_mutex);
         notify_apply();
     }
@@ -300,6 +291,13 @@ esp_err_t source_config_set_password(const char *password)
 
     uint8_t hash[32];
     hash_password(password, hash);
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool changed = !s_cfg.password_set ||
+                   memcmp(s_password_hash, hash, sizeof(s_password_hash)) != 0;
+    xSemaphoreGive(s_mutex);
+    if (!changed) {
+        return ESP_OK;
+    }
 
     nvs_handle_t nvs;
     esp_err_t err = nvs_open(CFG_NS, NVS_READWRITE, &nvs);

@@ -24,7 +24,15 @@ static const char TAG[] = "protocomm_pserial";
 #if defined(CONFIG_IDF_TARGET_ESP32C2)
   #define REQ_Q_MAX                  3
 #else
-  #define REQ_Q_MAX                  10
+  /* Was 10 — at 125 audio packets/s that's only 80 ms of backpressure
+   * tolerance before audio_forward_task → esp_hosted_send_custom_data →
+   * protocomm_pserial_data_ready → xQueueSend(req_queue, portMAX_DELAY)
+   * starts blocking. Any time pserial_task is preempted longer than
+   * that (Wi-Fi event, flash write, etc.), the audio_forward_task
+   * blocks here and audio packets pile up in s_audio_forward_q until
+   * IT overflows — counted as c6_fwd_fail. Bumped to 32 so the bridge
+   * has ~250 ms of breathing room before any of that happens. */
+  #define REQ_Q_MAX                  32
 #endif
 
 #define SIZE_OF_TYPE                  1

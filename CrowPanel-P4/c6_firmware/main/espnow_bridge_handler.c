@@ -8,14 +8,14 @@
  * Flow:
  *   1. On boot, register SDIO handlers and a Wi-Fi event listener.
  *   2. On WIFI_EVENT_STA_START (fired by ESP-Hosted after transport up),
- *      force channel 1, init ESP-NOW, start listening.
+ *      init ESP-NOW, start listening.
  *   3. espnow_recv_cb runs continuously — every valid beacon is stored
  *      locally AND forwarded to the P4 as ROOM_FOUND immediately.
- *   4. CMD_SCAN: force channel, clear room list, wait SCAN_LISTEN_MS,
- *      then send SCAN_DONE with the count of rooms found during that window.
+ *   4. CMD_SCAN: scan common AP channels, clear room list, wait
+ *      SCAN_LISTEN_MS, then send SCAN_DONE with rooms found during that window.
  *   5. CMD_JOIN: send authenticated HELLO to the Source, wait for ACCEPT.
  *   6. On ACCEPT: decrypt audio key, forward AUDIO_KEY + AUDIO_CONFIG to P4.
- *   7. Forward validated encrypted LC3 ESP-NOW audio packets to the P4.
+ *   7. Forward validated encrypted SBC ESP-NOW audio packets to the P4.
  */
 
 #include <inttypes.h>
@@ -26,8 +26,10 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -44,12 +46,14 @@
 #include "esp_hosted_peer_data.h"
 #include "espnow_protocol.h"
 #include "espnow_sink_c6.h"
+#include "sdio_slave_api.h"
 
 static const char *TAG = "room_c6";
 
 /* ───── Constants ───── */
 
-#define ESPNOW_CHANNEL      1
+#define ESPNOW_DEFAULT_CHANNEL 1
+#define ESPNOW_SCAN_CHANNELS 3
 #define MAX_ROOMS            ESPNOW_MAX_ROOMS
 #define ROOM_ID_LEN          8
 #define PROTO_MAGIC          0x44554152u
@@ -59,6 +63,11 @@ static const char *TAG = "room_c6";
 #define MSG_ACCEPT           3
 #define MSG_AUDIO            4
 #define JOIN_TIMEOUT_MS      2000
+#define AUDIO_DEDUPE_SLOTS   64
+#define AUDIO_FORWARD_QUEUE_DEPTH 24
+#define MAX_WIFI_TX_POWER_QDBM 84
+#define ESPNOW_RANGE_PHY_MODE WIFI_PHY_MODE_11B
+#define ESPNOW_RANGE_PHY_RATE WIFI_PHY_RATE_5M_L
 
 /* ───── Shared secret (must match Source protocol.h MASTER_KEY) ───── */
 
@@ -80,7 +89,7 @@ typedef struct __attribute__((packed)) {
     uint16_t lc3_dt_us;
     uint16_t sample_rate_hz;
     uint16_t bitrate_kbps;
-    uint8_t  frame_bytes;
+    uint16_t frame_bytes;
     uint8_t  flags;
     uint32_t stream_id;
 } beacon_msg_t;
@@ -104,7 +113,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  key_nonce[16];
     uint8_t  encrypted_audio_key[32];
     uint32_t stream_id;
-    uint8_t  frame_bytes;
+    uint16_t frame_bytes;
     uint8_t  auth[16];
 } accept_msg_t;
 
@@ -120,19 +129,37 @@ typedef struct __attribute__((packed)) {
     uint32_t payload_crc32;
     uint8_t  copy_idx;
     uint8_t  copy_count;
-    uint8_t  frame_bytes;
+    uint16_t frame_bytes;
     uint8_t  channels;
     uint8_t  payload[ESPNOW_AUDIO_MAX_FRAME_BYTES];
 } audio_msg_t;
 
-_Static_assert(ESPNOW_LC3_FRAME_US == 7500, "C6 ESP-NOW LC3 frame duration must be 7.5 ms");
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  type;
+    uint8_t  room_hash;
+    uint8_t  flags;
+    uint32_t stream_id;
+    uint32_t seq;
+    uint32_t capture_us;
+    uint32_t payload_crc32;
+    uint8_t  copy_idx;
+    uint8_t  copy_count;
+    uint16_t frame_bytes;
+    uint8_t  channels;
+} audio_hdr_t;
+
+_Static_assert(ESPNOW_LC3_FRAME_US == 8000, "C6 ESP-NOW SBC packet duration must be 8 ms");
 _Static_assert(ESPNOW_SAMPLE_RATE_HZ == 48000, "C6 ESP-NOW sample rate must be 48 kHz");
 _Static_assert(ESPNOW_CHANNELS == 2, "C6 ESP-NOW audio must be stereo");
-_Static_assert(ESPNOW_LC3_BYTES_PER_CH == 72, "C6 ESP-NOW LC3 channel payload must be 72 bytes");
-_Static_assert(ESPNOW_LC3_FRAME_BYTES == 144, "C6 ESP-NOW stereo payload must be 144 bytes");
+_Static_assert(ESPNOW_SAMPLES_PER_FRAME == 384, "C6 ESP-NOW SBC payload must represent 384 samples");
+_Static_assert(ESPNOW_LC3_FRAME_BYTES == 249, "C6 ESP-NOW SBC payload must be 249 bytes");
 _Static_assert(ESPNOW_AUDIO_COPY_DEFAULT == 4, "C6 ESP-NOW audio must use four copies");
+_Static_assert(sizeof(audio_hdr_t) == offsetof(audio_msg_t, payload),
+               "C6 audio header must match audio_msg_t payload offset");
 _Static_assert(sizeof(((audio_msg_t *)0)->payload) == ESPNOW_LC3_FRAME_BYTES,
-               "C6 audio_msg_t payload must carry one full LC3 stereo frame");
+               "C6 audio_msg_t payload must carry one SBC audio packet");
 
 /* ───── Room list ───── */
 
@@ -140,6 +167,7 @@ typedef struct {
     beacon_msg_t beacon;
     int64_t      last_seen_us;
     int8_t       rssi;
+    uint8_t      wifi_channel;
     uint32_t     room_code;
     uint32_t     stream_id;
 } room_entry_t;
@@ -159,6 +187,8 @@ static beacon_msg_t s_selected_beacon;
 static uint32_t     s_selected_room_code;
 static uint32_t     s_selected_stream_id;
 static uint8_t      s_selected_room_hash;
+static uint8_t      s_selected_channel = ESPNOW_DEFAULT_CHANNEL;
+static uint8_t      s_current_channel = ESPNOW_DEFAULT_CHANNEL;
 static uint8_t      s_selected_sink_nonce[16];
 static uint8_t      s_audio_key[ESPNOW_AUDIO_KEY_LEN];
 static int8_t       s_last_rssi;
@@ -167,18 +197,104 @@ static volatile uint32_t s_espnow_rx_total;
 static volatile uint32_t s_espnow_beacons;
 static volatile uint32_t s_espnow_audio;
 static volatile uint32_t s_audio_late_or_dup;
-static uint32_t s_last_forwarded_seq;
-static bool s_have_forwarded_seq;
+static volatile uint32_t s_audio_crc_fail;
+static volatile uint32_t s_audio_header_drop;
+static volatile uint32_t s_audio_forward_fail;
+static volatile uint32_t s_audio_copy_hist[ESPNOW_AUDIO_COPY_DEFAULT];
+/* Worst-case esp_hosted_send_custom_data() return time in the current
+ * stats reporting window.
+ *
+ * IMPORTANT: this is NOT the wall-clock time the data spends on the
+ * SDIO bus. esp_hosted_send_custom_data is asynchronous — it mallocs,
+ * memcpys, and pushes to an internal req_queue, then returns. The
+ * actual SDIO transfer is performed later by pserial_task (and the
+ * SDIO peripheral itself) at CONFIG_ESP_HOSTED_DEFAULT_TASK_PRIORITY.
+ *
+ * What this metric DOES catch:
+ *   - heap_caps_malloc stalls inside the send path (if mempool is off)
+ *   - the req_queue filling up (xQueueSend on req_queue uses
+ *     portMAX_DELAY, so it blocks the caller when pserial_task is
+ *     starved and can't drain). A growing max here means pserial_task
+ *     is being preempted long enough to back up.
+ *
+ * Updated by sdio_send() without a lock; stats task reads-then-zeroes
+ * it once per emit. A torn read just produces a slightly stale max,
+ * which is fine for telemetry.
+ */
+static volatile uint32_t s_sdio_enq_max_us;
+static uint32_t s_forwarded_seq[AUDIO_DEDUPE_SLOTS];
+static bool s_forwarded_seq_valid[AUDIO_DEDUPE_SLOTS];
+static const uint8_t s_scan_channels[ESPNOW_SCAN_CHANNELS] = {1, 6, 11};
+static TaskHandle_t s_audio_forward_task;
+static QueueHandle_t s_audio_forward_q;
+static StaticQueue_t s_audio_forward_q_struct;
+static uint8_t s_audio_forward_q_storage[AUDIO_FORWARD_QUEUE_DEPTH * sizeof(espnow_evt_audio_raw_t)];
 
 /* Forward declaration */
 static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
+static void apply_peer_rate_config(const uint8_t peer_addr[ESP_NOW_ETH_ALEN], const char *label)
+{
+    esp_now_rate_config_t rcfg = {
+        .phymode = ESPNOW_RANGE_PHY_MODE,
+        .rate    = ESPNOW_RANGE_PHY_RATE,
+        .ersu    = false,
+        .dcm     = false,
+    };
+    esp_err_t err = esp_now_set_peer_rate_config(peer_addr, &rcfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "set peer rate %s: %s", label ? label : "peer", esp_err_to_name(err));
+    }
+}
+
 /* ───── SDIO helpers ───── */
 
-static void sdio_send(uint32_t msg_id, const void *data, size_t len)
+/* sdio_send + audio_forward_task_fn live in IRAM so the audio forward
+ * path keeps running even when the rest of the C6 has its instruction
+ * cache disabled (NVS commits, OTA flash writes, app-CPU flash erase,
+ * etc.). During a cache disable any code that lives in flash stalls
+ * for tens of milliseconds — and that single event is enough to drop
+ * a whole burst of audio packets and show up as a 30-50 ms `spread`
+ * window on the P4 glitch log. Putting these two functions in IRAM
+ * costs ~600 B of IRAM and removes that entire failure mode. */
+static IRAM_ATTR esp_err_t sdio_send(uint32_t msg_id, const void *data, size_t len)
 {
+    /* Time the call so the P4 can see how long the enqueue path took.
+     * See the comment on s_sdio_enq_max_us — this is the time INCLUDING
+     * mallocs and req_queue blocking, NOT the on-wire SDIO time. */
+    int64_t t0 = esp_timer_get_time();
     esp_err_t err = esp_hosted_send_custom_data(msg_id, (const uint8_t *)data, len);
+    uint32_t dt_us = (uint32_t)(esp_timer_get_time() - t0);
+    if (dt_us > s_sdio_enq_max_us) s_sdio_enq_max_us = dt_us;
     if (err != ESP_OK) s_sdio_errors++;
+    return err;
+}
+
+static IRAM_ATTR void audio_forward_task_fn(void *arg)
+{
+    (void)arg;
+    espnow_evt_audio_raw_t evt;
+
+    while (1) {
+        if (xQueueReceive(s_audio_forward_q, &evt, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        if (s_state != ESPNOW_STATE_CONNECTED ||
+            evt.stream_id != s_selected_stream_id) {
+            continue;
+        }
+
+        /* Stamp the C6's clock just before we hand the packet to the
+         * SDIO/RPC pipeline. The P4 uses (p4_now - c6_send_us) spread
+         * within a 5 s window to isolate C6→P4 transport jitter from
+         * source-side / air-side jitter. */
+        evt.c6_send_us = (uint32_t)esp_timer_get_time();
+
+        if (sdio_send(ESPNOW_MSG_EVT_AUDIO, &evt, sizeof(evt)) != ESP_OK) {
+            s_audio_forward_fail++;
+        }
+    }
 }
 
 /* ───── Crypto helpers ───── */
@@ -305,7 +421,7 @@ static void send_room_found(const room_entry_t *entry)
 {
     espnow_evt_room_t evt = {0};
     memcpy(evt.mac, entry->beacon.source_mac, sizeof(evt.mac));
-    evt.wifi_channel = ESPNOW_CHANNEL;
+    evt.wifi_channel = entry->wifi_channel;
     evt.room_code    = entry->room_code;
     evt.stream_id    = entry->stream_id;
     evt.rssi         = entry->rssi;
@@ -321,6 +437,29 @@ static void send_scan_done(void)
     evt.room_count = room_count_locked();
     portEXIT_CRITICAL(&s_room_lock);
     sdio_send(ESPNOW_MSG_EVT_SCAN_DONE, &evt, sizeof(evt));
+}
+
+static void audio_dedupe_reset(void)
+{
+    memset(s_forwarded_seq_valid, 0, sizeof(s_forwarded_seq_valid));
+    memset((void *)s_audio_copy_hist, 0, sizeof(s_audio_copy_hist));
+    s_audio_late_or_dup = 0;
+    s_audio_crc_fail = 0;
+    s_audio_header_drop = 0;
+    s_audio_forward_fail = 0;
+}
+
+static bool audio_already_forwarded(uint32_t seq)
+{
+    uint32_t slot = seq & (AUDIO_DEDUPE_SLOTS - 1);
+    return s_forwarded_seq_valid[slot] && s_forwarded_seq[slot] == seq;
+}
+
+static void audio_mark_forwarded(uint32_t seq)
+{
+    uint32_t slot = seq & (AUDIO_DEDUPE_SLOTS - 1);
+    s_forwarded_seq[slot] = seq;
+    s_forwarded_seq_valid[slot] = true;
 }
 
 /* ───── ESP-NOW init / deinit ─────
@@ -340,7 +479,26 @@ static void espnow_full_deinit(void)
     }
 }
 
-static esp_err_t espnow_full_init(void)
+/* Lightweight channel hop: keeps ESP-NOW state, broadcast peer registration
+ * and the RX callback all alive — we only retune the radio. Saves ~30-80 ms
+ * of `esp_now_deinit` + `esp_now_init` + `esp_now_register_recv_cb` +
+ * `esp_now_add_peer` overhead per channel switch, which is critical during
+ * scan: with 1200 ms slices and full reinit eating ~50 ms each, we were
+ * effectively listening for only ~1150 ms per channel. With set_channel-
+ * only we get the full 1200 ms of pure RX time per slice. */
+static esp_err_t espnow_set_channel_only(uint8_t channel)
+{
+    if (channel == 0) channel = ESPNOW_DEFAULT_CHANNEL;
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_channel(%u): %s", channel, esp_err_to_name(err));
+        return err;
+    }
+    s_current_channel = channel;
+    return ESP_OK;
+}
+
+static esp_err_t espnow_full_init(uint8_t channel)
 {
     espnow_full_deinit();
 
@@ -348,16 +506,24 @@ static esp_err_t espnow_full_init(void)
     if (err != ESP_OK)
         ESP_LOGW(TAG, "set_ps: %s", esp_err_to_name(err));
 
+    err = esp_wifi_set_max_tx_power(MAX_WIFI_TX_POWER_QDBM);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "set_max_tx_power(%d): %s", MAX_WIFI_TX_POWER_QDBM, esp_err_to_name(err));
+
     err = esp_wifi_set_protocol(WIFI_IF_STA,
                                 WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "set_protocol: %s", esp_err_to_name(err));
 
-    err = esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    if (channel == 0) {
+        channel = ESPNOW_DEFAULT_CHANNEL;
+    }
+    err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "set_channel(%d): %s", ESPNOW_CHANNEL, esp_err_to_name(err));
+        ESP_LOGE(TAG, "set_channel(%u): %s", channel, esp_err_to_name(err));
         return err;
     }
+    s_current_channel = channel;
 
     err = esp_now_init();
     if (err != ESP_OK && err != ESP_ERR_ESPNOW_INTERNAL) {
@@ -376,7 +542,7 @@ static esp_err_t espnow_full_init(void)
 
     esp_now_peer_info_t bcast = {0};
     memset(bcast.peer_addr, 0xFF, ESP_NOW_ETH_ALEN);
-    bcast.channel = ESPNOW_CHANNEL;
+    bcast.channel = channel;
     bcast.ifidx   = WIFI_IF_STA;
     bcast.encrypt = false;
     esp_now_add_peer(&bcast);
@@ -386,7 +552,7 @@ static esp_err_t espnow_full_init(void)
     uint8_t ch = 0;
     wifi_second_chan_t sec;
     esp_wifi_get_channel(&ch, &sec);
-    ESP_LOGI(TAG, "ESP-NOW ready on channel %u (actual=%u)", ESPNOW_CHANNEL, ch);
+    ESP_LOGI(TAG, "ESP-NOW ready on channel %u (actual=%u)", channel, ch);
     return ESP_OK;
 }
 
@@ -432,13 +598,14 @@ static void add_or_update_room(const beacon_msg_t *beacon, int8_t rssi)
     s_rooms[slot].beacon      = *beacon;
     s_rooms[slot].last_seen_us = now;
     s_rooms[slot].rssi         = rssi;
+    s_rooms[slot].wifi_channel = s_current_channel;
     s_rooms[slot].room_code    = hash_room_id(beacon);
     s_rooms[slot].stream_id    = stream_id_from_beacon(beacon);
     snapshot = s_rooms[slot];
     portEXIT_CRITICAL(&s_room_lock);
 
-    ESP_LOGI(TAG, "Room found: %.8s rssi=%d mac=" MACSTR " dt=%u fb=%u",
-             beacon->room, rssi, MAC2STR(beacon->source_mac),
+    ESP_LOGI(TAG, "Room found: %.8s ch=%u rssi=%d mac=" MACSTR " dt=%u fb=%u",
+             beacon->room, s_current_channel, rssi, MAC2STR(beacon->source_mac),
              beacon->lc3_dt_us, beacon->frame_bytes);
     send_room_found(&snapshot);
 }
@@ -469,6 +636,11 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
         s_espnow_beacons++;
         beacon_msg_t beacon;
         memcpy(&beacon, data, sizeof(beacon));
+        if (s_state == ESPNOW_STATE_CONNECTED &&
+            memcmp(beacon.source_mac, s_selected_beacon.source_mac, 6) == 0 &&
+            strncmp(beacon.room, s_selected_beacon.room, ROOM_ID_LEN) == 0) {
+            return;
+        }
         add_or_update_room(&beacon, s_last_rssi);
     } else if (data[5] == MSG_ACCEPT && len == (int)sizeof(accept_msg_t) && info) {
         accept_msg_t accept;
@@ -490,9 +662,9 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
             return;
         }
         if (accept.stream_id != s_selected_stream_id) {
-            ESP_LOGW(TAG, "ACCEPT stream mismatch got=%" PRIu32 " expected=%" PRIu32,
+            ESP_LOGW(TAG, "ACCEPT stream changed got=%" PRIu32 " expected=%" PRIu32 "; using new stream",
                      accept.stream_id, s_selected_stream_id);
-            return;
+            s_selected_stream_id = accept.stream_id;
         }
         if (accept.frame_bytes != ESPNOW_LC3_FRAME_BYTES) {
             ESP_LOGW(TAG, "ACCEPT frame size mismatch got=%u expected=%u",
@@ -508,10 +680,13 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
         s_waiting_accept = false;
         s_state = ESPNOW_STATE_CONNECTED;
         s_selected_stream_id = accept.stream_id;
+        if (s_audio_forward_q) {
+            xQueueReset(s_audio_forward_q);
+        }
 
         espnow_evt_joined_t joined = {0};
         memcpy(joined.mac, s_selected_beacon.source_mac, 6);
-        joined.wifi_channel = ESPNOW_CHANNEL;
+        joined.wifi_channel = s_selected_channel;
         joined.room_code = s_selected_room_code;
         joined.stream_id = s_selected_stream_id;
         sdio_send(ESPNOW_MSG_EVT_JOINED, &joined, sizeof(joined));
@@ -532,15 +707,15 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
         audio_key.sample_rate_hz = ESPNOW_SAMPLE_RATE_HZ;
         sdio_send(ESPNOW_MSG_EVT_AUDIO_KEY, &audio_key, sizeof(audio_key));
 
-        s_have_forwarded_seq = false;
-        ESP_LOGI(TAG, "ACCEPT OK: room=%.8s ESP-NOW LC3 key installed", accept.room);
+        audio_dedupe_reset();
+        ESP_LOGI(TAG, "ACCEPT OK: room=%.8s ESP-NOW SBC key installed", accept.room);
         send_status(s_state);
     } else if (data[5] == MSG_AUDIO && info &&
                len == (int)(offsetof(audio_msg_t, payload) + ESPNOW_LC3_FRAME_BYTES)) {
         if (s_state != ESPNOW_STATE_CONNECTED) return;
         if (memcmp(info->src_addr, s_selected_beacon.source_mac, 6) != 0) return;
 
-        audio_msg_t audio;
+        audio_hdr_t audio;
         memcpy(&audio, data, sizeof(audio));
         if (audio.magic != PROTO_MAGIC ||
             audio.version != PROTO_VERSION ||
@@ -551,9 +726,17 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
             audio.stream_id != s_selected_stream_id ||
             audio.copy_count != ESPNOW_AUDIO_COPY_DEFAULT ||
             audio.copy_idx >= ESPNOW_AUDIO_COPY_DEFAULT) {
+            s_audio_header_drop++;
             return;
         }
-        if (crc32_audio(audio.payload, ESPNOW_LC3_FRAME_BYTES) != audio.payload_crc32) {
+        if (audio_already_forwarded(audio.seq)) {
+            s_audio_late_or_dup++;
+            return;
+        }
+
+        const uint8_t *payload = data + offsetof(audio_msg_t, payload);
+        if (crc32_audio(payload, ESPNOW_LC3_FRAME_BYTES) != audio.payload_crc32) {
+            s_audio_crc_fail++;
             return;
         }
         espnow_evt_audio_raw_t evt = {0};
@@ -567,10 +750,14 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
         evt.channels = ESPNOW_CHANNELS;
         evt.lc3_dt_us = ESPNOW_LC3_FRAME_US;
         evt.sample_rate_hz = ESPNOW_SAMPLE_RATE_HZ;
-        memcpy(evt.payload, audio.payload, ESPNOW_LC3_FRAME_BYTES);
-        sdio_send(ESPNOW_MSG_EVT_AUDIO, &evt, sizeof(evt));
-        s_last_forwarded_seq = audio.seq;
-        s_have_forwarded_seq = true;
+        memcpy(evt.payload, payload, ESPNOW_LC3_FRAME_BYTES);
+        if (s_audio_forward_q &&
+            xQueueSendToBack(s_audio_forward_q, &evt, 0) == pdTRUE) {
+            audio_mark_forwarded(audio.seq);
+            s_audio_copy_hist[audio.copy_idx]++;
+        } else {
+            s_audio_forward_fail++;
+        }
         s_espnow_audio++;
     }
 }
@@ -580,7 +767,27 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
 static void scan_done_task_fn(void *arg)
 {
     (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(ESPNOW_SCAN_LISTEN_MS));
+    const uint32_t slice_ms = ESPNOW_SCAN_LISTEN_MS / ESPNOW_SCAN_CHANNELS;
+    /* First slice: full ESP-NOW (re)init so we're guaranteed to have a
+     * registered RX callback and broadcast peer. Subsequent slices just
+     * retune the radio — see espnow_set_channel_only() comment. */
+    for (int i = 0; i < ESPNOW_SCAN_CHANNELS && s_state == ESPNOW_STATE_SCANNING; ++i) {
+        uint8_t channel = s_scan_channels[i];
+        esp_err_t err = (i == 0) ? espnow_full_init(channel)
+                                 : espnow_set_channel_only(channel);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "scan channel %u %s failed: %s", channel,
+                     (i == 0) ? "init" : "hop", esp_err_to_name(err));
+            /* Recovery: if a bare hop fails for some reason, fall back to
+             * a full reinit so the next slice can still listen. */
+            if (i > 0 && espnow_full_init(channel) != ESP_OK) {
+                continue;
+            }
+        }
+        ESP_LOGI(TAG, "Scanning for rooms on channel %u (%" PRIu32 " ms)...",
+                 channel, slice_ms);
+        vTaskDelay(pdMS_TO_TICKS(slice_ms));
+    }
     if (s_state == ESPNOW_STATE_SCANNING) {
         s_state = ESPNOW_STATE_IDLE;
         send_scan_done();
@@ -630,7 +837,7 @@ static void cmd_init_cb(uint32_t msg_id, const uint8_t *data, size_t len, void *
 {
     (void)msg_id; (void)data; (void)len; (void)ctx;
     ESP_LOGI(TAG, "CMD_INIT: full ESP-NOW reinit");
-    esp_err_t err = espnow_full_init();
+    esp_err_t err = espnow_full_init(ESPNOW_DEFAULT_CHANNEL);
     if (err == ESP_OK) {
         s_state = ESPNOW_STATE_IDLE;
     } else {
@@ -652,20 +859,13 @@ static void cmd_scan_cb(uint32_t msg_id, const uint8_t *data, size_t len, void *
 {
     (void)msg_id; (void)data; (void)len; (void)ctx;
 
-    /* Full reinit to guarantee clean ESP-NOW state and correct channel */
-    esp_err_t err = espnow_full_init();
-    if (err != ESP_OK) {
-        send_error(ESP_ERR_INVALID_STATE, "ESP-NOW reinit failed for scan");
-        return;
-    }
-
     portENTER_CRITICAL(&s_room_lock);
     memset(s_rooms, 0, sizeof(s_rooms));
     portEXIT_CRITICAL(&s_room_lock);
 
     s_state = ESPNOW_STATE_SCANNING;
     send_status(s_state);
-    ESP_LOGI(TAG, "Scanning for rooms (%d ms)...", ESPNOW_SCAN_LISTEN_MS);
+    ESP_LOGI(TAG, "Scanning for rooms across channels 1/6/11 (%d ms)...", ESPNOW_SCAN_LISTEN_MS);
 
     if (s_scan_done_task == NULL)
         xTaskCreate(scan_done_task_fn, "scan_done", 3072, NULL, 3, &s_scan_done_task);
@@ -686,12 +886,6 @@ static void cmd_join_cb(uint32_t msg_id, const uint8_t *data, size_t len, void *
     (void)msg_id; (void)ctx;
     if (!data || len < sizeof(espnow_cmd_join_t)) return;
 
-    /* Reinit ESP-NOW to ensure channel is correct */
-    if (espnow_full_init() != ESP_OK) {
-        send_error(ESP_ERR_INVALID_STATE, "ESP-NOW reinit failed for join");
-        return;
-    }
-
     const espnow_cmd_join_t *cmd = (const espnow_cmd_join_t *)data;
     room_entry_t room = {0};
     bool found = false;
@@ -710,7 +904,34 @@ static void cmd_join_cb(uint32_t msg_id, const uint8_t *data, size_t len, void *
     portEXIT_CRITICAL(&s_room_lock);
 
     if (!found) {
-        send_error(ESP_ERR_NOT_FOUND, "Room no longer visible");
+        if (cmd->wifi_channel == 0 || cmd->name[0] == '\0') {
+            send_error(ESP_ERR_NOT_FOUND, "Room no longer visible");
+            return;
+        }
+
+        memset(&room, 0, sizeof(room));
+        room.beacon.magic = PROTO_MAGIC;
+        room.beacon.version = PROTO_VERSION;
+        room.beacon.type = MSG_BEACON;
+        copy_room_name(room.beacon.room, cmd->name);
+        memcpy(room.beacon.source_mac, cmd->mac, ESP_NOW_ETH_ALEN);
+        room.beacon.lc3_dt_us = ESPNOW_LC3_FRAME_US;
+        room.beacon.sample_rate_hz = ESPNOW_SAMPLE_RATE_HZ;
+        room.beacon.bitrate_kbps = 0;
+        room.beacon.frame_bytes = ESPNOW_LC3_FRAME_BYTES;
+        room.beacon.flags = 0x01;
+        room.beacon.stream_id = cmd->stream_id;
+        room.last_seen_us = esp_timer_get_time();
+        room.wifi_channel = cmd->wifi_channel;
+        room.room_code = cmd->room_code;
+        room.stream_id = cmd->stream_id;
+        found = true;
+        ESP_LOGW(TAG, "Joining from P4 room snapshot ch=%u room=%.8s stream=%" PRIu32,
+                 room.wifi_channel, room.beacon.room, room.stream_id);
+    }
+
+    if (espnow_full_init(room.wifi_channel) != ESP_OK) {
+        send_error(ESP_ERR_INVALID_STATE, "ESP-NOW reinit failed for room channel");
         return;
     }
 
@@ -729,15 +950,17 @@ static void cmd_join_cb(uint32_t msg_id, const uint8_t *data, size_t len, void *
     if (!esp_now_is_peer_exist(room.beacon.source_mac)) {
         esp_now_peer_info_t peer = {0};
         memcpy(peer.peer_addr, room.beacon.source_mac, ESP_NOW_ETH_ALEN);
-        peer.channel = ESPNOW_CHANNEL;
+        peer.channel = room.wifi_channel;
         peer.ifidx   = WIFI_IF_STA;
         peer.encrypt = false;
         esp_now_add_peer(&peer);
     }
+    apply_peer_rate_config(room.beacon.source_mac, "source");
 
     s_selected_beacon    = room.beacon;
     s_selected_room_code = room.room_code;
     s_selected_stream_id = room.stream_id;
+    s_selected_channel   = room.wifi_channel;
     derive_room_hash(room.beacon.room, &s_selected_room_hash);
     memcpy(s_selected_sink_nonce, hello.sink_nonce, sizeof(s_selected_sink_nonce));
     s_waiting_accept     = true;
@@ -763,6 +986,9 @@ static void cmd_leave_cb(uint32_t msg_id, const uint8_t *data, size_t len, void 
     (void)msg_id; (void)data; (void)len; (void)ctx;
     s_waiting_accept = false;
     s_state = s_espnow_inited ? ESPNOW_STATE_IDLE : ESPNOW_STATE_NOT_INIT;
+    if (s_audio_forward_q) {
+        xQueueReset(s_audio_forward_q);
+    }
     sdio_send(ESPNOW_MSG_EVT_LEFT, NULL, 0);
     send_status(s_state);
 }
@@ -776,7 +1002,7 @@ static void wifi_evt_handler(void *arg, esp_event_base_t base, int32_t id, void 
 
     if (id == WIFI_EVENT_STA_START || id == WIFI_EVENT_AP_START) {
         ESP_LOGI(TAG, "Wi-Fi STA started — init ESP-NOW");
-        espnow_full_init();
+        espnow_full_init(ESPNOW_DEFAULT_CHANNEL);
         if (s_state == ESPNOW_STATE_NOT_INIT)
             s_state = ESPNOW_STATE_IDLE;
     } else if (id == WIFI_EVENT_STA_STOP || id == WIFI_EVENT_AP_STOP) {
@@ -786,8 +1012,15 @@ static void wifi_evt_handler(void *arg, esp_event_base_t base, int32_t id, void 
     }
 }
 
-/* ───── Stats task ───── */
-
+/* ───── Stats task ───── *
+ *
+ * While CONNECTED we emit the full counter snapshot every 1 s so the P4
+ * can diff it against its own packet-RX counter every 5 s and surface
+ * "I had a glitch, here's where it came from" in one line. The wire cost
+ * is ~48 B/s over SDIO which is negligible compared with audio traffic.
+ * Outside CONNECTED we fall back to the original 2 s cadence so room
+ * scan UI feedback isn't delayed.
+ */
 static void stats_task_fn(void *arg)
 {
     (void)arg;
@@ -797,16 +1030,40 @@ static void stats_task_fn(void *arg)
         esp_wifi_get_channel(&ch, &sec);
 
         espnow_evt_stats_t st = {
-            .packets_rx = s_espnow_audio,
-            .packets_lost = s_audio_late_or_dup,
-            .plc_frames = 0,
-            .rssi_last = s_last_rssi,
-            .wifi_channel = ch,
+            .packets_rx       = s_espnow_audio,
+            .packets_lost     = s_audio_late_or_dup,  /* backcompat */
+            .plc_frames       = 0,
+            .rssi_last        = s_last_rssi,
+            .wifi_channel     = ch,
             .sdio_send_errors = (uint8_t)(s_sdio_errors > 255 ? 255 : s_sdio_errors),
-            .reserved = 0,
+            .reserved         = 0,
+            .forward_fail     = s_audio_forward_fail,
+            .header_drops     = s_audio_header_drop,
+            .crc_fails        = s_audio_crc_fail,
+            .late_or_dup      = s_audio_late_or_dup,
         };
+        for (int i = 0; i < 4; ++i) {
+            st.copy_hist[i] = s_audio_copy_hist[i];
+        }
+        /* Snapshot-and-reset the enqueue-time max for this window. Doing it
+         * BEFORE the stats sdio_send() means the value reported reflects the
+         * peak between the previous emit and now, not including the stats
+         * send itself (which would dominate the reading). */
+        st.sdio_max_us = s_sdio_enq_max_us;
+        s_sdio_enq_max_us = 0;
+        /* Cumulative slave SDIO TX silent-drop counter. Surfaced as
+         * `c6_tx_drop` in the P4 glitch log so we can finally tell
+         * whether p4_rx < c6_rx is happening because the C6 TX path
+         * is silently dropping (mempool exhaustion, send_queue fail)
+         * vs. happening further downstream on the P4 host RX side. */
+        st.sdio_tx_silent_drops = sdio_slave_get_tx_silent_drops();
         sdio_send(ESPNOW_MSG_EVT_STATS, &st, sizeof(st));
-        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        if (s_state == ESPNOW_STATE_CONNECTED) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
     }
 }
 
@@ -826,6 +1083,26 @@ esp_err_t espnow_sink_c6_init(void)
     esp_err_t err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_evt_handler, NULL);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "WIFI_EVENT register failed: %s", esp_err_to_name(err));
+
+    s_audio_forward_q = xQueueCreateStatic(AUDIO_FORWARD_QUEUE_DEPTH,
+                                           sizeof(espnow_evt_audio_raw_t),
+                                           s_audio_forward_q_storage,
+                                           &s_audio_forward_q_struct);
+    if (!s_audio_forward_q) {
+        ESP_LOGE(TAG, "Audio forward queue creation failed");
+        return ESP_ERR_NO_MEM;
+    }
+    /* audio_fwd at prio 23 — same as pserial_task. Both are the audio
+     * hot path and should be the highest-priority work the C6 does
+     * outside of Wi-Fi MAC ISR/task. FreeRTOS round-robins same-prio
+     * tasks, which lets audio_fwd hand off a packet immediately when
+     * pserial drains its req_queue, instead of having to wait for
+     * pserial to block on something at >22 (the old setup).
+     *
+     * Also: audio_forward_task_fn and sdio_send are now IRAM-resident
+     * so this pipeline keeps running through any flash cache disable
+     * event (NVS commit, OTA write, etc.). */
+    xTaskCreate(audio_forward_task_fn, "audio_fwd", 4096, NULL, 23, &s_audio_forward_task);
 
     xTaskCreate(stats_task_fn, "room_stats", 3072, NULL, 2, NULL);
     ESP_LOGI(TAG, "Room bridge registered; waiting for Wi-Fi STA start");

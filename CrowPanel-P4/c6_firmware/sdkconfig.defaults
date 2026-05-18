@@ -33,7 +33,18 @@ CONFIG_BOOTLOADER_COMPILER_OPTIMIZATION_PERF=y
 # 9. ESP-Hosted peer data transfer (for custom SDIO commands)
 CONFIG_ESP_HOSTED_ENABLE_PEER_DATA_TRANSFER=y
 CONFIG_ESP_HOSTED_MAX_CUSTOM_MSG_HANDLERS=16
-# CONFIG_ESP_HOSTED_USE_MEMPOOL is not set
+# Mempool MUST stay enabled — disabling it puts a heap_caps_malloc on every
+# audio packet (two of them per packet: one in slave_control.c for the
+# [msg_id|data] buffer, one in sdio_slave_api.c for the DMA send buffer).
+# At 125 packets/s that's 250 mallocs/s + 250 frees/s, and any heap
+# fragmentation event becomes an audible audio glitch on the P4.
+CONFIG_ESP_HOSTED_USE_MEMPOOL=y
+# pserial_task and the SDIO TX path run at this priority. Keeping it at 21
+# (the IDF default) means they get preempted by every Wi-Fi MAC task burst
+# at prio 23, which is the dominant cause of "late=" drops on the P4. 23
+# lets the SDIO write path compete with Wi-Fi instead of being starved by
+# it. Don't go above 23 — that risks starving the Wi-Fi driver itself.
+CONFIG_ESP_HOSTED_DEFAULT_TASK_PRIORITY=23
 
 # 10. Disable built-in app_main (we provide our own)
 # CONFIG_ESP_HOSTED_COPROCESSOR_APP_MAIN is not set

@@ -3,7 +3,7 @@
  *
  * P4-side component that communicates with C6 coprocessor via ESP-Hosted
  * custom data channel (SDIO). The C6 owns ESP-NOW room discovery and
- * authentication and receives ESP-NOW audio; the P4 decodes LC3 audio from
+ * authentication and receives ESP-NOW audio; the P4 decodes SBC audio from
  * C6-forwarded SDIO events and plays it.
  */
 #pragma once

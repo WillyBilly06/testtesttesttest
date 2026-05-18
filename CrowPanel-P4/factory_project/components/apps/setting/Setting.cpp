@@ -2590,9 +2590,11 @@ void AppSettings::euiRefresTask(void *arg)
             last_battery_state = bat_state;
         }
 
-        // Update WiFi icon state - query actual WiFi signal strength when connected
+        // Update WiFi icon state. Do not issue Wi-Fi RPCs while ESP-NOW audio
+        // is connected; those share the C6/SDIO path and can disturb audio.
         int wifi_icon_state = 0;
-        if (getWifiEventBits() & WIFI_EVENT_CONNECTED) {
+        bool espnow_audio_active = espnow_sink_is_connected();
+        if ((getWifiEventBits() & WIFI_EVENT_CONNECTED) && !espnow_audio_active) {
             if (!sntp_initialized_for_connection) {
                 app_sntp_init();
                 sntp_initialized_for_connection = true;

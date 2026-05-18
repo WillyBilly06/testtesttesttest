@@ -5,5 +5,15 @@
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="native\sbc\out\sbc_decoder_native.dll"
+          Condition="Exists('native\sbc\out\sbc_decoder_native.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>sbc_decoder_native.dll</Link>
+      <Visible>false</Visible>
+    </None>
+  </ItemGroup>
 </Project>

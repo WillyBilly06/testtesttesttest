@@ -878,11 +878,15 @@ esp_err_t esp_hosted_send_custom_data(uint32_t msg_id_to_send, const uint8_t *da
 		memcpy(buf + sizeof(msg_id_to_send), data_to_send, data_len_to_send);
 	}
 
-	/* Send to RPC layer - rpc_evt_custom_rpc will unpack and wrap in protobuf */
-	send_event_data_to_host(RPC_ID__Event_CustomRpc, buf, (int)total_len);
+	/* Send to RPC layer - rpc_evt_custom_rpc will unpack and wrap in protobuf.
+	 * Propagate the inner failure (was previously ignored because
+	 * send_event_data_to_host returned void) so the caller — which for
+	 * audio is sdio_send() in espnow_bridge_handler.c — can count the
+	 * drop and surface it via the stats event to the P4. */
+	esp_err_t ret = send_event_data_to_host(RPC_ID__Event_CustomRpc, buf, (int)total_len);
 
 	free(buf);
-	return ESP_OK;
+	return ret;
 }
 
 esp_err_t esp_hosted_register_custom_callback(uint32_t msg_id_exp,
